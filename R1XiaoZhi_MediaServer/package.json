@@ -1,0 +1,13 @@
+{
+  "name": "r1-media-server",
+  "version": "1.0.0",
+  "description": "R1XiaoZhi_MediaServer —— R1 小智的媒体服务器（本地音乐库 + 在线音乐库 + 网络电台，一个容器一个端口）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js --port 8100"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "music-metadata": "^12.2.1"
+  }
+}

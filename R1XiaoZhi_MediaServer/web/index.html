@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="theme-color" content="#0a0e16">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>小智曲库</title>
+<style>
+/* 与 R1 控制台（janus_pandora2/ui/ui.html）同一套观感：深色玻璃卡 + .li 列表 + 底部播放条 */
+:root{
+  --bg:#0a0e16; --card:rgba(255,255,255,.055); --card2:rgba(255,255,255,.085);
+  --line:rgba(255,255,255,.09); --tx:#e9eff8; --tx2:#8d9cb5; --tx3:#5b6a83;
+  --ac:#22d3ee; --ac2:#818cf8; --ok:#34d399; --warn:#fbbf24; --err:#f87171;
+  --grad:linear-gradient(135deg,#22d3ee,#818cf8);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg);color:var(--tx);min-height:100vh;
+  font:15px/1.5 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  padding-bottom:calc(96px + env(safe-area-inset-bottom));overflow-x:hidden;
+}
+body::before,body::after{content:"";position:fixed;border-radius:50%;filter:blur(90px);z-index:0;pointer-events:none}
+body::before{width:340px;height:340px;top:-120px;left:-90px;background:rgba(34,211,238,.20)}
+body::after{width:300px;height:300px;bottom:-110px;right:-80px;background:rgba(129,140,248,.20)}
+.wrap{position:relative;z-index:1;max-width:520px;margin:0 auto;padding:0 14px}
+
+.top{position:sticky;top:0;z-index:20;margin:0 -14px 12px;padding:calc(12px + env(safe-area-inset-top)) 16px 10px;
+  background:rgba(10,14,22,.72);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid var(--line)}
+.top .r1{display:flex;align-items:center;gap:9px}
+.top .nm{font-size:16px;font-weight:600;letter-spacing:.2px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--tx3);flex:none}
+.dot.on{background:var(--ok);box-shadow:0 0 9px var(--ok)}
+.dot.warn{background:var(--warn);box-shadow:0 0 9px var(--warn)}
+.top .sub{margin-top:6px;font-size:12px;color:var(--tx2);display:flex;gap:8px;flex-wrap:wrap}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:2px 8px;border-radius:99px;
+  background:var(--card2);border:1px solid var(--line);color:var(--tx2)}
+.tabs{display:flex;gap:6px;margin-top:10px}
+.tab{flex:1;text-align:center;padding:8px 0;border-radius:11px;font-size:13px;color:var(--tx2);
+  background:var(--card2);border:1px solid var(--line);cursor:pointer}
+.tab.on{background:linear-gradient(135deg,rgba(34,211,238,.18),rgba(129,140,248,.18));
+  border-color:rgba(34,211,238,.4);color:var(--tx);font-weight:600}
+
+.card{background:var(--card);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  border:1px solid var(--line);border-radius:20px;padding:15px;margin-bottom:12px}
+.ttl{font-size:12px;color:var(--tx2);font-weight:600;letter-spacing:.6px;margin:12px 0 10px;
+  display:flex;align-items:center;justify-content:space-between}
+.ttl .hint{font-weight:400;color:var(--tx3);font-size:11px;letter-spacing:0}
+.ttl a{color:var(--ac);text-decoration:none;font-weight:600}
+
+.srch{display:flex;gap:8px}
+input[type=text],input[type=password],select{
+  flex:1;min-width:0;padding:10px 12px;border-radius:13px;border:1px solid var(--line);
+  background:rgba(0,0,0,.25);color:var(--tx);font-size:14px;outline:none}
+input:focus,select:focus{border-color:rgba(34,211,238,.5)}
+select option{background:#111a24;color:var(--tx)}
+.btn{padding:10px 14px;border-radius:13px;border:1px solid var(--line);background:var(--card2);
+  color:var(--tx);font-size:13px;cursor:pointer;flex:none}
+.btn:active{transform:scale(.96)}
+.btn.pri{background:var(--grad);border-color:transparent;color:#08111c;font-weight:600}
+.btn.sm{padding:9px 12px;font-size:12px}
+.btns{display:flex;gap:8px;margin-top:10px}
+
+.li{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:12px;cursor:pointer;transition:background .15s}
+.li:active{background:rgba(255,255,255,.06)}
+.li.cur{background:rgba(34,211,238,.10)}
+.li .n{width:26px;flex:none;text-align:center;font-size:12px;color:var(--tx3);font-variant-numeric:tabular-nums}
+.li.cur .n{color:var(--ac)}
+.li .tx{min-width:0;flex:1}
+.li .tx .a{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li .tx .b{font-size:11px;color:var(--tx3);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li.cur .tx .a{color:var(--ac);font-weight:600}
+.li .plus{flex:none;font-size:16px;color:var(--tx3);padding:0 6px;line-height:1}
+.li .plus:active{color:var(--ac)}
+.scroll{max-height:52vh;overflow-y:auto;margin:0 -6px;padding:0 6px;-webkit-overflow-scrolling:touch}
+.scroll::-webkit-scrollbar{width:4px}
+.scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15);border-radius:9px}
+.note{font-size:11px;color:var(--tx3);line-height:1.6;margin-top:8px}
+.sw{flex:none;font-size:11px;padding:3px 12px;border:1px solid var(--line);border-radius:999px;color:var(--tx3);cursor:pointer;user-select:none}
+.sw.on{color:var(--ok);border-color:rgba(52,211,153,.45);background:rgba(52,211,153,.08)}
+.sw.off{color:var(--tx3);opacity:.75}
+.li.tgl{cursor:pointer}
+
+/* 曲库三块（本地 / 在线 / 网络电台）：各自可折叠、各自计数、各自可增删 */
+/* ★ 这里**不能**写 overflow:hidden —— 祖先一旦是滚动/裁剪容器，下面 .bh 的
+   position:sticky 就失效了（块头会被一起滚走，长列表里就再也点不到折叠）。
+   圆角改由 .bh 自己承担上圆角。 */
+.blk{margin:0 0 10px;border:1px solid var(--line);border-radius:14px;
+  background:rgba(255,255,255,.022)}
+/* 吸顶：本地块展开后有上千行，滚到中间也随时能折叠 / 看到自己在哪一块 */
+.bh{position:sticky;position:-webkit-sticky;top:0;z-index:3;
+  display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;user-select:none;
+  border-radius:13px 13px 0 0;border-bottom:1px solid var(--line);
+  background:#111826;background:rgba(17,24,38,.97);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.blk.cls .bh{border-radius:13px;border-bottom:none}
+.bh:active{background:rgba(255,255,255,.07)}
+.bh .bt{font-size:13px;font-weight:600}
+.bh .bc{font-size:11px;color:var(--tx3);font-variant-numeric:tabular-nums}
+.bh .bs{flex:1;text-align:right;font-size:10px;color:var(--tx3)}
+.bh .bd{flex:none;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;
+  border-top:5px solid var(--tx3);transition:transform .18s}
+.blk.cls .bd{transform:rotate(-90deg)}
+.blk.cls .bl{display:none}
+.tagoff{font-size:10px;color:var(--warn);border:1px solid rgba(251,191,36,.35);border-radius:99px;padding:1px 7px}
+.bl{padding:0 6px 6px}
+.bl .li{padding:8px 8px}
+.bl .li .del{flex:none;font-size:13px;color:var(--tx3);padding:0 7px;line-height:1}
+.bl .li .del:active{color:var(--err)}
+.bmore{text-align:center;font-size:11px;color:var(--ac);padding:9px 0;cursor:pointer}
+.badd{display:flex;gap:6px;padding:8px 4px 2px;border-top:1px dashed var(--line);margin-top:4px}
+.badd input{padding:8px 10px;font-size:12px;border-radius:11px}
+.badd .btn{padding:9px 10px;font-size:12px}
+.foot{text-align:center;font-size:11px;color:var(--tx3);padding:6px 0 18px;line-height:1.8}
+.foot code{background:var(--card2);padding:1px 5px;border-radius:5px;color:var(--tx2);font-size:11px}
+
+/* 播放条 */
+.pb{position:fixed;left:0;right:0;bottom:0;z-index:30;padding:10px 14px calc(10px + env(safe-area-inset-bottom));
+  background:rgba(10,14,22,.86);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-top:1px solid var(--line)}
+.pb .row{display:flex;align-items:center;gap:12px;max-width:520px;margin:0 auto}
+.pb .tx{min-width:0;flex:1}
+.pb .tx .a{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pb .tx .b{font-size:11px;color:var(--tx3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pbb{flex:none;width:44px;height:44px;border-radius:50%;border:none;background:var(--grad);
+  color:#08111c;font-size:17px;cursor:pointer;display:grid;place-items:center}
+.pbb:active{transform:scale(.94)}
+.bar{height:5px;border-radius:99px;background:rgba(255,255,255,.10);overflow:hidden;margin:9px auto 0;max-width:520px}
+.bar>i{display:block;height:100%;width:0;border-radius:99px;background:var(--grad)}
+.msg{max-width:520px;margin:6px auto 0;font-size:11px;color:var(--tx3);line-height:1.5;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msg.warn{color:var(--warn)}
+.msg.err{color:var(--err)}
+.vol{display:flex;align-items:center;gap:8px;max-width:520px;margin:8px auto 0}
+.vol span{font-size:11px;color:var(--tx3);flex:none}
+input[type=range]{flex:1;accent-color:var(--ac)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="r1"><span class="dot" id="dot"></span><span class="nm">R1XiaoZhi_MediaServer</span></div>
+    <div class="sub">
+      <span class="pill" id="pSrc">音源 —</span>
+      <span class="pill" id="pPool">曲库 —</span>
+      <span class="pill" id="pLx">落雪 docker —</span>
+    </div>
+    <div class="tabs">
+      <div class="tab on" data-t="lib">曲库</div>
+      <div class="tab" data-t="src">音源</div>
+    </div>
+  </div>
+
+  <!-- ---------- 曲库 ---------- -->
+  <div class="card" id="pgLib">
+    <div class="srch">
+      <input type="text" id="q" placeholder="搜歌名 / 歌手 / 电台名，回车即搜">
+      <button class="btn pri" id="bGo">搜索</button>
+    </div>
+    <div class="ttl">
+      <span id="libTtl">载入中…</span>
+      <span class="hint"><a href="#" id="bNew">换一批（在线）</a> · <a href="#" id="bBack" style="display:none">回到曲库</a></span>
+    </div>
+    <div class="scroll" id="list"><div class="note">载入中…</div></div>
+    <div class="note">三块都能在底部播放条试听：本地走 <b>/m/</b> 直链，在线走 <b>/r/</b>
+      （点一下才现场取链），电台是外部直播流 —— 直播没有进度条是正常的。<br>
+      关掉的块在这里也会标「已关闭」，跟小智那边看到的一致。</div>
+  </div>
+
+  <!-- ---------- 音源 ---------- -->
+  <div class="card" id="pgSrc" style="display:none">
+    <div class="ttl" style="margin-top:0">给小智的可见范围<small style="font-weight:400;color:var(--tx3)">关掉的块<b>根本不进</b> /index.json —— 小智拿不到</small></div>
+    <div class="li tgl" data-k="local">
+      <div class="tx"><div class="a">本地音乐库</div><div class="b" id="hLocal">你 NAS 上的音频文件</div></div>
+      <div class="sw" id="swLocal">开</div>
+    </div>
+    <div class="li tgl" data-k="online">
+      <div class="tx"><div class="a">在线音乐库</div><div class="b" id="hOnline">随机 100 首在线池（惰性取链）</div></div>
+      <div class="sw" id="swOnline">开</div>
+    </div>
+    <div class="li tgl" data-k="radio">
+      <div class="tx"><div class="a">网络电台</div><div class="b" id="hRadio">files/radios.json 里的台</div></div>
+      <div class="sw" id="swRadio">开</div>
+    </div>
+    <div class="note">改完要不要去 R1 控制台 <code>/api/act?op=reload</code> 重拉一次曲库 —— 小智手里的列表才会跟着变。</div>
+
+    <div class="ttl">落雪 docker（lxserver）<small style="font-weight:400;color:var(--tx3)">取链的<b>唯一</b>通道</small></div>
+    <div class="srch">
+      <input type="text" id="lxBase" placeholder="http://192.168.2.189:9527">
+      <button class="btn pri" id="bLx">保存</button>
+      <button class="btn" id="bLxClr">停用</button>
+    </div>
+    <div class="note" id="lxNote">—</div>
+
+    <div class="ttl">默认音质<small style="font-weight:400;color:var(--tx3)">取链先试这一档，不行再挪档</small></div>
+    <div class="srch">
+      <select id="qSel">
+        <option value="128k">128k（默认 · 出链最快）</option>
+        <option value="192k">192k</option>
+        <option value="320k">320k（高 · 常给中转地址，多半出不去）</option>
+      </select>
+      <button class="btn pri" id="bQ">保存</button>
+    </div>
+    <div class="note" id="qNote">—</div>
+
+    <div class="ttl">具名用户<small style="font-weight:400;color:var(--tx3)">（可选）</small></div>
+    <div class="srch">
+      <input type="text" id="lxUser" placeholder="用户名（留空 = 匿名 open）">
+      <input type="password" id="lxTok" placeholder="lxserver 后台建的持久化 API Token">
+    </div>
+    <div class="note">
+      匿名（open）用户就能用「公开订阅源」取链。只有 lxserver 后台开了公开用户限制、
+      或某个源被设成非公开，才需要这一对。<br>
+      保存时会顺手连通自检一次（HTTP 200 = 它活着），填错地址当场看得见。
+    </div>
+
+  </div>
+
+  <div class="foot">
+    <b>R1XiaoZhi_MediaServer</b>（本地音乐库 + 在线音源 + 网络电台，一个容器一个端口）<br>
+    语音点歌：把 <code>http://&lt;NAS&gt;:8100/index.json</code> 写进 R1 的 <code>files/music_index</code>
+    —— <b>只写这一条</b>，三块内容都在里面。<br>
+    再对小智说「播放第 3 首」或直接报歌名。<br>
+    改过开关 / 点过「换一批」后，去 R1 控制台 <code>/api/act?op=reload</code> 重新拉一次曲库。
+  </div>
+</div>
+
+<footer class="pb">
+  <div class="row">
+    <div class="tx"><div class="a" id="npA">未在播放</div><div class="b" id="npB">点一首歌试试</div></div>
+    <button class="pbb" id="bPlay">▶</button>
+  </div>
+  <div class="bar"><i id="npBar"></i></div>
+  <div class="vol"><span>音量</span><input type="range" id="vol" min="0" max="100" value="80"></div>
+  <div class="msg" id="msg"></div>
+</footer>
+<audio id="au"></audio>
+
+<script>
+var $ = function (id) { return document.getElementById(id); };
+var esc = function (s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+  });
+};
+/* 曲库分三块：本地 / 在线 / 网络电台。
+   LIB = 服务端 /api/lib 一次给全的三块；Q = 搜索词（本地+电台浏览器内过滤，在线走服务端） */
+var LIB = { local: [], online: [], radios: [] };
+var OFF = { local: false, online: false, radio: false };
+var CLS = { local: false, online: false, radio: false };  // 三块各自的折叠状态
+var ALL = { local: false, radio: false };                 // 本地/电台默认只渲染前 CAP 行
+var CAP = 150;
+var SRES = [], Q = '', CUR = '', PLAYING = false;
+
+/* ---------------- 曲库 ---------------- */
+async function loadLib(fresh) {
+  $('libTtl').textContent = fresh ? '正在换一批在线…' : '载入中…';
+  try {
+    var r = await fetch('/api/lib?n=100' + (fresh ? '&fresh=1' : ''))
+      .then(function (x) { return x.json(); });
+    LIB.local = r.local || [];
+    LIB.online = r.online || [];
+    LIB.radios = r.radios || [];
+    OFF = r.off || OFF;
+    var c = r.counts || {};
+    $('pPool').textContent = '曲库 ' + ((c.local || 0) + (c.online || 0))
+      + ' 首 · 电台 ' + (c.radio || 0) + ' 个';
+    render();
+  } catch (e) {
+    $('list').innerHTML = '<div class="note">载入失败：' + esc(e.message) + '</div>';
+  }
+}
+
+/** 本地 / 电台全量已在手上，直接在浏览器里过滤，不用再问服务端 */
+function filt(list) {
+  if (!Q) return list;
+  var q = Q.toLowerCase();
+  return list.filter(function (t) {
+    return (String(t.title || '') + ' ' + String(t.name || '') + ' '
+      + String(t.artist || '') + ' ' + String(t.album || '') + ' ' + String(t.url || '')
+    ).toLowerCase().indexOf(q) >= 0;
+  });
+}
+
+function rows(list, kind) {
+  var cap = (kind === 'online' || ALL[kind]) ? list.length : Math.min(list.length, CAP);
+  var out = '';
+  for (var i = 0; i < cap; i++) {
+    var t = list[i];
+    var sub = kind === 'radio' ? String(t.url || '')
+      : [t.artist, t.album, t.source].filter(Boolean).join(' · ');
+    out += '<div class="li' + (CUR && CUR === t.url ? ' cur' : '') + '"'
+      + ' data-k="' + kind + '" data-i="' + i + '">'
+      + '<div class="n">' + (i + 1) + '</div>'
+      + '<div class="tx"><div class="a">' + esc(t.title || t.name || '(未命名)') + '</div>'
+      + '<div class="b">' + esc(sub) + '</div></div>'
+      + (kind === 'radio' ? '<div class="del" data-del="' + i + '">✕</div>' : '')
+      + (kind === 'online' && Q ? '<div class="plus" data-add="' + i + '">＋</div>' : '')
+      + '</div>';
+  }
+  if (list.length > cap) {
+    out += '<div class="bmore" data-more="' + kind + '">显示全部 ' + list.length + ' 条…</div>';
+  }
+  return out;
+}
+
+function addForm() {
+  return '<div class="badd">'
+    + '<input type="text" id="rName" placeholder="电台名，如 音乐之声">'
+    + '<input type="text" id="rUrl" placeholder="https://… 流地址">'
+    + '<button class="btn sm pri" id="bRAdd">添加</button></div>';
+}
+
+function block(kind, name, list) {
+  var empty = OFF[kind] ? '已在「音源」页关闭 —— 小智也看不到这一块' : '（空）';
+  return '<div class="blk' + (CLS[kind] ? ' cls' : '') + '">'
+    + '<div class="bh" data-h="' + kind + '">'
+    + '<span class="bt">' + name + '</span>'
+    + '<span class="bc">' + list.length + '</span>'
+    + (OFF[kind] ? '<span class="tagoff">已关闭</span>' : '')
+    + '<span class="bs">' + (CLS[kind] ? '展开' : '收起') + '</span><span class="bd"></span>'
+    + '</div><div class="bl">'
+    + (list.length ? rows(list, kind) : '<div class="note" style="padding:8px">' + empty + '</div>')
+    + (kind === 'radio' ? addForm() : '')
+    + '</div></div>';
+}
+
+function render() {
+  var box = $('list');
+  var on = Q ? SRES : LIB.online;
+  var lo = filt(LIB.local), ra = filt(LIB.radios);
+  $('libTtl').textContent = Q
+    ? '「' + Q + '」· 本地 ' + lo.length + ' · 在线 ' + SRES.length + ' · 电台 ' + ra.length
+    : '点一下即播 · 三块都能试听';
+  $('bBack').style.display = Q ? '' : 'none';
+  $('bNew').style.display = Q ? 'none' : '';
+  box.innerHTML = block('local', '本地音乐库', lo)
+    + block('online', '在线音乐库', on)
+    + block('radio', '网络电台', ra);
+
+  // 「添加电台」是每次重建出来的，得重新挂；其余全走事件委托
+  var b = $('bRAdd');
+  if (b) b.onclick = addRadio;
+
+  box.onclick = function (e) {
+    var el = e.target;
+    var g = function (n) { return el.getAttribute ? el.getAttribute(n) : null; };
+    if (g('data-del') != null) { delRadio(+g('data-del')); return; }
+    if (g('data-add') != null) { addToPool(SRES[+g('data-add')]); return; }
+    if (g('data-more') != null) { ALL[g('data-more')] = true; render(); return; }
+    var hb = el.closest ? el.closest('.bh') : null;
+    if (hb) { var h = hb.getAttribute('data-h'); CLS[h] = !CLS[h]; render(); return; }
+    var row = el.closest ? el.closest('.li') : null;
+    if (!row) return;
+    var k = row.getAttribute('data-k');
+    var list = k === 'local' ? lo : (k === 'radio' ? ra : on);
+    play(list[+row.getAttribute('data-i')], k);
+  };
+}
+
+/* ---------------- 网络电台：自己加台 / 删台 ---------------- */
+async function saveRadios(list) {
+  try {
+    var r = await fetch('/api/radios', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(list.map(function (x) { return { name: x.name, url: x.url }; })),
+    }).then(function (x) { return x.json(); });
+    if (r && r.ok) {
+      LIB.radios = (r.radios || []).map(function (x) {
+        return { src: 'radio', name: x.name, title: x.name, url: x.url };
+      });
+      render();
+      msg('已保存 · 共 ' + r.count + ' 个台');
+    } else {
+      msg('保存失败：' + ((r && r.err) || '未知'), 'err');
+    }
+  } catch (e) { msg('保存失败：' + e.message, 'err'); }
+}
+
+function delRadio(i) {
+  var list = LIB.radios.slice();
+  var gone = list.splice(i, 1)[0];
+  if (!gone) return;
+  msg('删除「' + gone.name + '」…');
+  saveRadios(list);
+}
+
+function addRadio() {
+  var n = $('rName').value.trim(), u = $('rUrl').value.trim();
+  if (!n || !u) { msg('电台名和流地址都要填', 'warn'); return; }
+  if (!/^https?:\/\//i.test(u)) { msg('流地址要以 http:// 或 https:// 开头', 'warn'); return; }
+  var list = LIB.radios.slice();
+  list.push({ name: n, url: u });
+  msg('添加「' + n + '」…');
+  saveRadios(list);
+}
+
+async function addToPool(t) {
+  if (!t) return;
+  var r = await fetch('/api/pool/add', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(t),
+  }).then(function (x) { return x.json(); }).catch(function () { return { added: 0 }; });
+  msg(r.added ? '已加入曲库（第 ' + r.total + ' 首）—— 语音点歌也能点到它了' : '曲库里已经有这首歌了');
+}
+
+/* ---------------- 搜索：本地 + 电台在浏览器里过滤，在线问服务端 ---------------- */
+async function doSearch() {
+  Q = $('q').value.trim();
+  if (!Q) { SRES = []; render(); return; }
+  $('libTtl').textContent = '搜索中…';
+  try {
+    var r = await fetch('/api/search?q=' + encodeURIComponent(Q) + '&n=30')
+      .then(function (x) { return x.json(); });
+    SRES = r.list || [];
+    render();
+    if (!SRES.length) msg('在线没搜到 —— 本地和电台的命中看下面三块', 'warn');
+  } catch (e) {
+    SRES = []; render();
+    msg('在线搜索失败：' + e.message, 'err');
+  }
+}
+
+/* ---------------- 播放：三块共用底部播放条 ----------------
+   本地 /m/<file> 是直链；在线 /r/<source>/<rid> 由服务端现场取链再转发；
+   电台是外部流地址。三种都是「给 audio 一个 URL」，前端不用再自己取链。 */
+var au = $('au');
+async function play(t, kind) {
+  if (!t) return;
+  /* 兜底：老版本服务端的搜索结果不带 url（只有 source/rid）。
+     这里按惰性地址补一个，跟 /index.json 里的在线条目同款。 */
+  if (!t.url && t.rid) {
+    t.url = '/r/' + (t.source || 'kw') + '/' + t.rid
+      + '?title=' + encodeURIComponent(t.title || '')
+      + '&artist=' + encodeURIComponent(t.artist || '');
+  }
+  if (!t.url) return;
+  CUR = t.url;
+  render();
+  $('npA').textContent = t.title || t.name || '(未命名)';
+  $('npB').textContent = kind === 'radio'
+    ? String(t.url || '')
+    : ([t.artist, t.album].filter(Boolean).join(' · ') || '准备播放…');
+  msg(kind === 'radio' ? '连接电台流…' : (kind === 'online' ? '在线取链 + 缓冲…' : '缓冲中…'));
+  try {
+    au.src = t.url;
+    au.volume = (+$('vol').value || 80) / 100;
+    await au.play();
+    PLAYING = true;
+    $('bPlay').textContent = '❚❚';
+    $('npB').textContent = kind === 'radio'
+      ? '直播流 · ' + (t.name || '')
+      : [t.artist, kind === 'online' ? '在线（惰性取链）' : '本地文件'].filter(Boolean).join(' · ');
+    msg(kind === 'radio' ? '直播中 —— 直播流没有进度条，正常' : '');
+  } catch (e) {
+    msg('播放失败：' + ((e && e.message) || e), 'err');
+  }
+}
+
+function msg(s, cls) { var m = $('msg'); m.textContent = s || ''; m.className = 'msg' + (cls ? ' ' + cls : ''); }
+
+/* ---------------- 三块曲库的可见性开关 ---------------- */
+var MEDIA = { local: true, online: true, radio: true };
+var MEDIA_TXT = {
+  local: '你 NAS 上的音频文件',
+  online: '随机 100 首在线池（惰性取链）',
+  radio: 'files/radios.json 里的台',
+};
+
+function renderMedia() {
+  ['local', 'online', 'radio'].forEach(function (k) {
+    var id = k.charAt(0).toUpperCase() + k.slice(1);
+    var on = !!MEDIA[k];
+    var sw = $('sw' + id);
+    sw.textContent = on ? '开' : '关';
+    sw.className = 'sw ' + (on ? 'on' : 'off');
+    $('h' + id).textContent = MEDIA_TXT[k] + (on ? '' : '（已关闭 · 小智看不到）');
+  });
+}
+
+async function loadMedia() {
+  try {
+    var r = await fetch('/api/media').then(function (x) { return x.json(); });
+    if (r && r.flags) MEDIA = r.flags;
+    renderMedia();
+  } catch (e) { /* 拉不到就保持上次的样子 */ }
+}
+
+async function toggleMedia(k) {
+  var next = {}; next[k] = !MEDIA[k];
+  try {
+    var r = await fetch('/api/media', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(next),
+    }).then(function (x) { return x.json(); });
+    if (r && r.flags) MEDIA = r.flags;
+    renderMedia();
+  } catch (e) { /* 网络问题就不动 UI */ }
+}
+
+Array.prototype.forEach.call(document.querySelectorAll('.li.tgl'), function (row) {
+  row.onclick = function () { toggleMedia(row.getAttribute('data-k')); };
+});
+
+/* ---------------- 默认音质（取链先试哪一档） ---------------- */
+var QDEF_TXT = {
+  '128k': '128k —— 绝大多数歌本来只有这一档，且给的多半是酷我真链，出链最快。',
+  '192k': '192k —— 中档；128k 取不到时会往上再试 320k。',
+  '320k': '320k —— 高档；实测经常命中「幻音音源」的中转地址（拿得到链但出不去），慢且容易失败。',
+};
+
+async function loadQuality() {
+  try {
+    var r = await fetch('/api/quality').then(function (x) { return x.json(); });
+    var q = r['default'] || '128k';
+    $('qSel').value = q;
+    $('qNote').innerHTML = '当前 <b>' + esc(q) + '</b>：' + esc(QDEF_TXT[q] || '')
+      + '<br>取链顺序 = 这首歌上次通的档 → 这一档 → 再往下/往上补。'
+      + '改了只影响<b>新</b>取链（已缓存的链不动），立刻生效，不用重启。';
+  } catch (e) { $('qNote').textContent = '读取失败：' + e.message; }
+}
+
+$('bQ').onclick = async function () {
+  var b = this; b.disabled = true;
+  $('qNote').textContent = '保存中…';
+  try {
+    var r = await fetch('/api/quality', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 'default': $('qSel').value }),
+    }).then(function (x) { return x.json(); });
+    if (!r.ok) $('qNote').textContent = r.error || '保存失败';
+  } catch (e) { $('qNote').textContent = '保存失败：' + e.message; }
+  loadQuality();
+  b.disabled = false;
+};
+
+/* ---------------- 音源：落雪 docker（取链的唯一通道） ---------------- */
+async function loadStat() {
+  try {
+    var h = await fetch('/api/health').then(function (x) { return x.json(); });
+    $('pSrc').textContent = '搜索源 ' + (h.searchSources || []).length + ' 个';
+  } catch (e) { /* 顶栏是装饰，失败不弹错 */ }
+  await loadLx();
+  await loadQuality();
+  await loadMedia();
+}
+
+async function loadLx() {
+  try {
+    var r = await fetch('/api/lx').then(function (x) { return x.json(); });
+    if (r.base && !$('lxBase').value) $('lxBase').value = r.base;
+    if (r.user && !$('lxUser').value) $('lxUser').value = r.user;
+    var good = r.has && !r.dead;
+    $('dot').className = 'dot ' + (good ? 'on' : 'warn');
+    $('pLx').textContent = r.has
+      ? ('落雪 docker ' + (r.user || '匿名') + (r.dead ? '（负缓存中）' : ' ✓'))
+      : '落雪 docker 未配置';
+    $('lxNote').innerHTML = r.has
+      ? '已启用 <b>' + esc(r.base) + '</b>' + (r.user ? '（具名 ' + esc(r.user) + '）' : '（匿名 open）')
+        + (r.dead ? ' · <span style="color:var(--err)">10 分钟内失败过，负缓存中</span>'
+                  : ' · <span style="color:var(--ok)">取链正常</span>')
+      : '<span style="color:var(--warn)">还没配置 —— 在线歌会全部取链失败，先填一个地址</span>';
+  } catch (e) {
+    $('dot').className = 'dot warn';
+    $('lxNote').textContent = '读取失败：' + e.message;
+  }
+}
+
+$('bLx').onclick = async function () {
+  var b = this; b.disabled = true;
+  $('lxNote').textContent = '保存中（顺手连通自检）…';
+  try {
+    var r = await fetch('/api/lx', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        base: $('lxBase').value.trim(),
+        user: $('lxUser').value.trim(),
+        token: $('lxTok').value.trim(),
+      }),
+    }).then(function (x) { return x.json(); });
+    if (r.ok && r.base) {
+      var p = r.probe || {};
+      $('lxNote').innerHTML = '已保存 <b>' + esc(r.base) + '</b> · 连通自检 '
+        + (p.status
+            ? '<span style="color:var(--ok)">HTTP ' + p.status + '（' + p.ms + 'ms）</span>'
+            : '<span style="color:var(--err)">连不上：' + esc(p.err || '超时') + '</span>');
+    } else {
+      $('lxNote').textContent = (r && (r.msg || r.error)) || '保存失败';
+    }
+    loadLx();
+  } catch (e) { $('lxNote').textContent = '保存失败：' + e.message; }
+  b.disabled = false;
+};
+$('bLxClr').onclick = async function () {
+  $('lxBase').value = ''; $('lxUser').value = ''; $('lxTok').value = '';
+  await fetch('/api/lx', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base: '' }),
+  });
+  loadLx();
+};
+
+/* ---------------- 绑定 ---------------- */
+$('bGo').onclick = doSearch;
+$('q').onkeydown = function (e) { if (e.key === 'Enter') doSearch(); };
+$('bNew').onclick = function (e) { e.preventDefault(); loadLib(true); };
+$('bBack').onclick = function (e) { e.preventDefault(); $('q').value = ''; Q = ''; SRES = []; render(); };
+$('bPlay').onclick = function () {
+  if (!au.src) { msg('先点一首歌', 'warn'); return; }
+  if (au.paused) { au.play(); PLAYING = true; $('bPlay').textContent = '❚❚'; }
+  else { au.pause(); PLAYING = false; $('bPlay').textContent = '▶'; }
+};
+au.onplay = function () { PLAYING = true; $('bPlay').textContent = '❚❚'; };
+au.onpause = function () { PLAYING = false; $('bPlay').textContent = '▶'; };
+au.ontimeupdate = function () {
+  var d = au.duration;
+  // 电台是直播流：duration = Infinity，进度条没意义 —— 留空，别画成 0% 的假进度
+  if (d && isFinite(d)) $('npBar').style.width = (au.currentTime / d * 100) + '%';
+  else $('npBar').style.width = '0';
+};
+au.onerror = function () {
+  var e = au.error;
+  var why = e ? ({ 1: '加载被中止', 2: '网络错误', 3: '解码失败（可能不是音频）', 4: '格式不支持/链接失效' })[e.code] : '未知';
+  msg('播放失败：' + why + (CUR.indexOf('/r/') >= 0
+    ? ' —— 在线歌多半是取链失败，去「音源」页看落雪 docker 状态' : ''), 'err');
+};
+$('vol').oninput = function () { au.volume = (+$('vol').value || 0) / 100; };
+Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
+  t.onclick = function () {
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (x) { x.className = 'tab'; });
+    t.className = 'tab on';
+    var lib = t.getAttribute('data-t') === 'lib';
+    $('pgLib').style.display = lib ? '' : 'none';
+    $('pgSrc').style.display = lib ? 'none' : '';
+  };
+});
+
+loadStat();
+loadLib(false);
+</script>
+</body>
+</html>
