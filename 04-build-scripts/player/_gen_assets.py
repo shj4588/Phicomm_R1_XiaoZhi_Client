@@ -33,6 +33,7 @@ def block(start_kw):
 
 
 donate = block("DONATE_QR_B64")
+group = block("GROUP_QR_B64")
 manif = block("MANIFEST_JSON")
 swjs = block("SW_JS")
 
@@ -105,6 +106,8 @@ public final class Assets {
 
 body = []
 body += reindent(donate, "    ")
+body.append("")
+body += reindent(group, "    ")
 body.append("")
 body += reindent(manif, "    ")
 body.append("")

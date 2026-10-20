@@ -1,0 +1,37 @@
+# R1XiaoZhi_MediaServer —— R1 小智媒体服务器（合并版，单一容器）
+#
+# 2026-10-17：mini-lx(8100) + r1-music(8010) 合并成一个容器一个端口。
+#   · 对外只有 8100，R1 的 files/music_index 只写 http://<NAS>:8100/index.json
+#   · /index.json 一次吐出：本地音乐库 + 在线随机池 + 网络电台
+#   · 三块都能在 Web 的「音源」页单独开关（关掉 = R1 拿不到）
+#
+# 用法：docker compose up -d --build
+services:
+  r1-media:
+    build: .
+    image: r1-media:local
+    container_name: R1XiaoZhi_MediaServer
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    volumes:
+      # ★ 关键：flag 账本和曲库池 / 本地标签缓存必须活过容器重建
+      #   files/my_lx           = 落雪 docker（lxserver）地址（取链的唯一通道）
+      #   files/my_base         = 对外 base（反代时才需要写）
+      #   files/pool.json       = 在线曲库池
+      #   files/local_cache.json= 本地曲库标签缓存（首次扫 1188 首后就靠它秒回）
+      #   files/media_flags.json= 三块曲库的可见性开关
+      #   files/quality.json     = 默认音质（128k / 192k / 320k，缺省 128k）
+      #   files/radios.json     = 网络电台清单（可选）
+      - ./files:/app/files
+      # ★ 本地音乐库：左边改成 NAS 上你自己的音乐目录
+      - /volume1/music:/music
+    environment:
+      - TZ=Asia/Shanghai
+      # 容器内音乐目录（与上面的挂载点一致），以及电台清单的位置
+      - MUSIC_DIR=/music
+      - RADIOS_FILE=/app/files/radios.json
+    # SSH 建的宿主机 files/ 多是 root 属主，Dockerfile 的 USER node 会写不了
+    # （pool.json / my_lx / media_flags 更新全哑）。显式用 root 跑最省心，
+    # 内网小服务没有安全顾虑。不想要这行就 chown -R 1000:1000 ./files 二选一。
+    user: "0:0"
