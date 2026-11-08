@@ -106,6 +106,9 @@ body::after{width:300px;height:300px;bottom:-110px;right:-80px;background:rgba(1
 .np .a{margin-top:4px;font-size:13px;color:var(--tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* pl-1.6.5：实际歌曲信息（专辑 · 时长 · 来源）——播翻唱/DJ 版时显示真实信息 */
 .np .a2{margin-top:2px;font-size:12px;color:var(--tx3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* pl-1.6.29：码率/格式那行 —— 稍微亮一点，跟上面「专辑 · 时长」区分开 */
+.np .a2.q{margin-top:3px;color:#7dd3fc;letter-spacing:.2px}
+.np .a2.q:empty{margin-top:0}
 .np .tag{margin-top:7px;display:inline-block;font-size:11px;padding:2px 9px;border-radius:99px;
   background:rgba(129,140,248,.16);color:#a5b4fc;border:1px solid rgba(129,140,248,.28)}
 
@@ -141,6 +144,10 @@ body::after{width:300px;height:300px;bottom:-110px;right:-80px;background:rgba(1
 .row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.055)}
 .row:last-child{border-bottom:none;padding-bottom:0}
 .row:first-child{padding-top:0}
+/* 子项：缩进 + 左侧竖线，表示它挂在上一行下面（pl-1.6.32 灯效档位） */
+.row.sub{padding-left:13px;position:relative}
+.row.sub::before{content:"";position:absolute;left:2px;top:6px;bottom:6px;width:2px;
+  border-radius:2px;background:rgba(255,255,255,.14)}
 .row .lb{font-size:14px}
 .row .ds{font-size:11px;color:var(--tx3);margin-top:2px;line-height:1.45}
 .sw{width:46px;height:27px;border-radius:99px;background:rgba(255,255,255,.13);position:relative;
@@ -189,6 +196,8 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;heigh
 .li{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:12px;cursor:pointer;
   transition:background .15s}
 .li:active{background:rgba(255,255,255,.06)}
+/* pl-1.6.27：点一下闪一下（电台取流要 1~2 秒，中间没反馈会以为没点到） */
+.li.hit{background:rgba(255,255,255,.13)}
 .li.cur{background:rgba(34,211,238,.10)}
 .li .n{width:26px;flex:none;text-align:center;font-size:12px;color:var(--tx3);font-variant-numeric:tabular-nums}
 .li.cur .n{color:var(--ac)}
@@ -291,6 +300,8 @@ body.embed .wrap{max-width:none;padding:0 8px 8px}
           <div class="t" id="npT">—</div>
           <div class="a" id="npA"> </div>
           <div class="a2" id="npMeta"></div>
+          <!-- pl-1.6.29：码率 / 格式（含电台）——三路退化：Exo Format → URL 里的 /64k.mp3 → HEAD 探测 -->
+          <div class="a2 q" id="npQual"></div>
           <span class="tag" id="npTag" style="display:none">本地曲库</span>
         </div>
       </div>
@@ -367,16 +378,12 @@ body.embed .wrap{max-width:none;padding:0 8px 8px}
         <button class="btn sm" onclick="doSearch()">搜索</button>
         <button class="btn sm" onclick="doSearchOnline()">在线搜歌</button>
       </div>
-      <div class="scroll" id="qRes" style="margin-top:10px"></div>
-    </div>
-
-    <div class="card">
-      <div class="ttl">按歌手连播 <span class="hint">数量留空 = 该歌手全部</span></div>
-      <div class="inline">
-        <input type="text" id="qArt" placeholder="歌手名">
-        <input type="number" id="qCnt" value="" min="1" max="50" placeholder="全部" style="max-width:64px">
-        <button class="btn sm" onclick="doArtist()">播放</button>
+      <!-- v1.3.196：一键把「当前搜索结果」整批排进播放列表。
+           以前想连播只能一首首点（点一条只播一条）。 -->
+      <div class="btns" style="margin-top:10px">
+        <button class="btn" onclick="queueAll()">全部载入播放列表</button>
       </div>
+      <div class="scroll" id="qRes" style="margin-top:10px"></div>
     </div>
 
     <div class="card">
@@ -466,7 +473,7 @@ body.embed .wrap{max-width:none;padding:0 8px 8px}
       </div>
       <div class="note" style="margin-top:6px"><b>本地</b>：列表最多显示多少首，「随便听」也按这个数挑；
         <b>0 = 不限制</b>（列全部）。<br>
-        <b>在线</b>：所有从 NAS 拉在线歌的途径统一按这个数 —— 按歌手连播补的在线曲目、
+        <b>在线</b>：所有从 NAS 拉在线歌的途径统一按这个数 —— 语音说「播放周杰伦的歌」补的在线曲目、
         「随机播放在线音乐」、页面「在线搜歌」，都是同一个上限（10~300，300 = NAS 一次能给的上限）。<br>
         在线曲目只是拉列表，真正播放那一刻才取链 ⇒ 多拿不花时间。</div>
     </div>
@@ -476,6 +483,15 @@ body.embed .wrap{max-width:none;padding:0 8px 8px}
       <div class="row">
         <div><div class="lb">氛围灯</div><div class="ds">彩色灯效（随音乐频谱变色），跑在 player 里</div></div>
         <div class="sw" id="swAmb" onclick="ambToggle()"></div>
+      </div>
+      <!-- pl-1.6.32：多彩 = 氛围灯的**子项**（二选一），不是独立开关。
+           氛围灯总开关关着时两档都不生效 ⇒ 选「多彩」时会顺手把总开关打开。 -->
+      <div class="row sub">
+        <div><div class="lb">灯效</div><div class="ds">原厂 = 15 颗同色随频谱变色；多彩 = 每次闪动把 15 颗颜色乱序重排（不含白色）</div></div>
+        <div class="seg" id="segAmbMode" style="width:130px;flex:none">
+          <div data-v="factory" onclick="setAmbMode('factory')">原厂</div>
+          <div data-v="multi" onclick="setAmbMode('multi')">多彩</div>
+        </div>
       </div>
       <div class="row">
         <div><div class="lb">唤醒灯</div><div class="ds">唤醒时亮起，定格在收音方向（24 颗拾音灯）</div></div>
@@ -527,6 +543,20 @@ body.embed .wrap{max-width:none;padding:0 8px 8px}
       </div>
       <div class="note" style="margin-top:8px">停用的是 <b>com.phicomm.speaker.device</b>（小智+麦克风+云端）。
         蓝牙 / DLNA / AirPlay 与本页面都在 player 进程里，不受影响。</div>
+    </div>
+
+    <div class="card">
+      <div class="ttl">播放引擎 <span class="hint" id="engHint">—</span></div>
+      <div class="btns" style="margin-top:8px">
+        <button class="btn" id="btnEngExo" onclick="setEngine('exo')">ExoPlayer 2.18</button>
+        <button class="btn" id="btnEngMp" onclick="setEngine('mp')">MediaPlayer（原厂）</button>
+      </div>
+      <div class="note" style="margin-top:8px">
+        切换会重启 <b>:NetPlayer</b> 播放进程（音乐断约 5 秒，队列和播放位置会重来）。
+        <b>ExoPlayer</b>：起播快、重复 play 幂等（电台不再卡顿）、拖动 seek 可用；
+        <b>MediaPlayer</b>：原厂 NuPlayer，兼容性最好（老 FLAC/APE 之类的兜底），
+        但电台起播后会卡 3 秒、seek 走原厂那条更慢的路。
+      </div>
     </div>
 
     <div class="card">
@@ -593,12 +623,14 @@ body.embed .wrap{max-width:none;padding:0 8px 8px}
 
     <div class="card">
       <div class="btns">
-        <button class="btn" onclick="showDonate()">赞赏码</button>
+        <button class="btn" onclick="showQR('donate')">赞赏</button>
+        <button class="btn" onclick="showQR('group')">讨论群</button>
       </div>
     </div>
 
     <div class="foot">
-      <span id="footVer">—</span> · 仅局域网可达，无鉴权
+      <div><span id="footVer">—</span> · 仅局域网可达，无鉴权</div>
+      <div>项目地址：<a href="https://github.com/shj4588/Phicomm_R1_XiaoZhi_Client" target="_blank" rel="noopener">https://github.com/shj4588/Phicomm_R1_XiaoZhi_Client</a></div>
     </div>
   </section>
 </div>
@@ -620,11 +652,26 @@ body.embed .wrap{max-width:none;padding:0 8px 8px}
 
 <div id="toast"></div>
 
+<!-- 两个弹窗各自独立：点遮罩/标题/说明（= 图片外任意处）都关闭；只有图片本身吃掉点击 -->
 <div id="donate" style="display:none;position:fixed;inset:0;z-index:80;background:rgba(3,6,12,.86);
-  backdrop-filter:blur(8px);display:none;place-items:center" onclick="hideDonate()">
-  <div style="text-align:center" onclick="event.stopPropagation()">
-    <img src="/donate.png" alt="赞赏码" style="width:290px;max-width:80vw;border-radius:16px;display:block">
-    <div style="color:var(--tx2);margin-top:12px;font-size:13px">制作不易，谢谢鼓励 · 点空白处关闭</div>
+  backdrop-filter:blur(8px);place-items:center" onclick="hideQR()">
+  <div style="text-align:center">
+    <div style="color:var(--tx);font-size:15px;font-weight:600;margin-bottom:10px">赞赏</div>
+    <img src="/donate.png" alt="赞赏" onclick="event.stopPropagation()"
+         style="width:290px;max-width:80vw;border-radius:16px;display:block">
+    <div style="color:var(--tx2);margin-top:12px;font-size:13px;max-width:290px">本项目完全免费，是否捐赠不影响功能使用</div>
+    <div style="color:var(--tx3);margin-top:6px;font-size:12px">点图片外任意处关闭</div>
+  </div>
+</div>
+
+<div id="group" style="display:none;position:fixed;inset:0;z-index:80;background:rgba(3,6,12,.86);
+  backdrop-filter:blur(8px);place-items:center" onclick="hideQR()">
+  <div style="text-align:center">
+    <div style="color:var(--tx);font-size:15px;font-weight:600;margin-bottom:10px">讨论群</div>
+    <img src="/group.png" alt="讨论群二维码" onclick="event.stopPropagation()"
+         style="width:290px;max-width:80vw;border-radius:16px;display:block">
+    <div style="color:var(--tx2);margin-top:12px;font-size:13px;max-width:290px">QQ 玩机讨论群：885906281</div>
+    <div style="color:var(--tx3);margin-top:6px;font-size:12px">点图片外任意处关闭</div>
   </div>
 </div>
 
@@ -664,12 +711,46 @@ var STALL = false;
    以前只有「在播 / 卡住」两态，在线歌那十几秒的取链缓冲一上来就被说成「没出声」。 */
 var PH = "idle";
 var QRADIO = false;      // 当前这首是不是电台（renderNp 里要优先于 PTYPE 判）
+/* ★ pl-1.6.25：还没判出来（时长没出来、也没认出直播流）—— 此时**不许**说「本地曲库」。
+   Exo 起播头 0.6 秒 total_time 还是 0，以前就凭 PTYPE=1 直接扣上「本地曲库」的帽子，
+   等真时长/直播结论出来再改口，看着就是「先本地曲库、3 秒后变电台」。 */
+var QUNK = false;        // 播放通道类型未判明（标签留空，别乱贴）
 var QVIA = "";           // 当前这首的来源（""=本地 / "online"=在线搜到 / "rand"=在线随机）
 /* ★ pl-1.6.16：封面 / 歌词
    QPIC   = status 的 curPic（device 从落雪经 NAS 拿的封面 URL，空=回落成转碟）
    LRC    = {title,artist,lines:[{time,text}]}；LRCKEY = "歌名|歌手"（换曲判重用）
    LRCOPEN= 面板展开？折叠是 CSS max-height 过渡，不做动画库。 */
 var QPIC = "", QPICKEY = "";   // QPICKEY = 这张封面属于哪首歌（换歌立刻摘图用）
+/* ★ pl-1.6.29：码率 / 格式（含电台）。
+   服务端三路退化，页面只管显示：
+     ① Exo 引擎 ⇒ Exo 的 Format（码率/采样率/声道/sampleMimeType 全准，电台也有）；
+     ② mp 引擎 ⇒ 格式取 URL 扩展名；码率先试 URL 里的 "/64k.mp3" 这种把码率写进路径的源；
+     ③ 再没有 ⇒ 服务端后台 HEAD 一次拿 Content-Length ÷ 时长（按 URL 缓存，
+        起播后下一轮轮询就能补上）。
+   QSRC 只是排障用（exo / url / head），会挂到这行的 title 上。 */
+var QBR = 0, QFMT = "", QSR = 0, QCH = 0, QSRC = "";
+function readQual(m) {
+  QBR = (m && m.br) | 0;
+  QFMT = String((m && m.fmt) || "");
+  QSR = (m && m.sr) | 0;
+  QCH = (m && m.ch) | 0;
+  QSRC = String((m && m.brSrc) || "");
+}
+function qualTxt() {
+  var a = [];
+  if (QFMT) a.push(QFMT);
+  if (QBR > 0) a.push(QBR + "kbps");
+  if (QSR > 0) a.push((QSR / 1000).toFixed(QSR % 1000 === 0 ? 0 : 1) + "kHz");
+  if (QCH > 0) a.push(QCH === 1 ? "单声道" : (QCH === 2 ? "立体声" : QCH + "声道"));
+  return a.join(" · ");
+}
+function paintQual() {
+  var e = $("npQual");
+  if (!e) return;
+  e.textContent = qualTxt();
+  /* 排障：鼠标悬停看得到这行是哪儿来的（exo / url / head） */
+  e.title = QSRC ? ("码率来源：" + QSRC) : "";
+}
 var LRC = null, LRCKEY = "", LRCOPEN = false, LRCIDX = -1, LRCUSR = 0;
 /* ★ pl-1.6.10（插值重写）：
    上一版是「真值回来直接覆盖显示值」+「本地按墙钟累加」两条路径各画各的 ——
@@ -765,22 +846,35 @@ function paintPos(pos) {
   if (PR_DRAG) pos = PR_VAL;
   else if (prWait()) pos = PR_SEEK_MS;   // 生效窗口内 UI 锁死在落点，绝不被旧真值拽走
   var ext = (PTYPE === 2 || PTYPE === 3);
-  var dur = (MI && MI.duration) || (mdurSec() * 1000);   // 真实总时长没出来前用列表元数据
+  /* ★ pl-1.6.24：电台 = 直播流，没有终点 ⇒ 压根不画百分比。
+     player 现在会把直播流的 durMs 归 0（Exo 报 TIME_UNSET），这里再兜一层：
+     没有时长就绝不拿它算 pct，否则 dur=1ms 时条恒 100%、时间被夹成 0:00 ——
+     那就是「进度条一直跳、时间一直 0」的观感来源。 */
+  var live = !ext && QRADIO;
+  var dur = live ? 0 : ((MI && MI.duration) || (mdurSec() * 1000));   // 真实总时长没出来前用列表元数据
   var wait = (PH === "loading");
   /* 250ms 扫一次 ⇒ 只在「要显示的东西真变了」时才写 DOM，别白刷。
      拖动时按 0.1s 粒度判重 ⇒ 把手才跟手。 */
   var step = PR_DRAG ? 100 : 1000;
-  var sig = (ext ? 1 : 0) + "|" + PH + "|" + (STALL ? 1 : 0) + "|"
+  var sig = (ext ? 1 : 0) + "|" + (live ? 1 : 0) + "|" + PH + "|" + (STALL ? 1 : 0) + "|"
           + Math.floor((pos || 0) / step) + "|" + dur + "|" + MDUR;
   if (sig === POS_PAINTED) return;
   POS_PAINTED = sig;
   /* 有得拖才显示把手（外部推流的音频在另一个进程，网页动不了它） */
   var bx = $("prBox");
-  if (bx) bx.className = "bar" + (ext ? "" : " seekable") + (PR_DRAG ? " dragging" : "");
+  if (bx) bx.className = "bar" + ((ext || live) ? "" : " seekable") + (PR_DRAG ? " dragging" : "");
   if (ext) {
     $("npDur").textContent = "—";
     $("npPos").textContent = "—";
     $("npBar").style.width = "0%";
+    return;
+  }
+  if (live) {
+    $("npDur").textContent = "直播";
+    $("npPos").textContent = wait ? "缓冲中" : (STALL ? "没出声" : "直播中");
+    $("npBar").style.width = "0%";
+    var kb0 = $("prKnob");
+    if (kb0) kb0.style.left = "0%";
     return;
   }
   $("npDur").textContent = dur > 0 ? fmt(dur) : "—";
@@ -802,7 +896,11 @@ function paintPos(pos) {
  *   偏差 ≤ 1.5s：把误差摊到下一格里（每秒最多借/还 300ms ⇒ 最快 0.7s、最慢 1.3s 走一格，
  *                差 30% 以内，肉眼看不出，但 3 秒一次轮询足够把误差吃掉）
  */
-var POS_MAX_ADJ = 300, POS_JUMP = 1500;
+var POS_MAX_ADJ = 300;              // 差出一整秒时，每格最多借/还 300ms（pl-1.6.24）
+/* pl-1.6.24：锁相基准 —— (真值整秒, 当时的显示整秒)。误差只看**两者的增量差**，
+   绝不看绝对位置（绝对位置天生差一个 HTTP 往返）。 */
+var POS_BASE_SEC = -1, POS_BASE_DISP = 0;
+function posResetBase(sec) { POS_BASE_SEC = sec; POS_BASE_DISP = POS_SEC; }
 function syncPos(p, dur) {
   if (p == null) return;
   /* 拖动期间 / seek 生效窗口内，服务端真值都是「旧的」，拿来对齐就会打架
@@ -823,21 +921,43 @@ function syncPos(p, dur) {
       PR_SEEK_TILL = 0;
       POS_SEC = landed ? sec : Math.max(0, Math.round(PR_SEEK_MS / 1000));
       POS_NEXT = t + 1000;
+      posResetBase(sec);
       paintPos(POS_SEC * 1000);
     }
     return;
   }
 
-  if (!POS_INIT) { POS_SEC = sec; POS_INIT = true; POS_NEXT = t + 1000; return; }
-  var err = p - POS_SEC * 1000;                 // >0 = 我们落后了，<0 = 超前了
-  if (err > POS_JUMP || err < -POS_JUMP) {      // 换曲 / 拖动 ⇒ 重新锚定
-    POS_SEC = sec; POS_NEXT = t + 1000; return;
+  if (!POS_INIT) {
+    POS_SEC = sec; POS_INIT = true; POS_NEXT = t + 1000;
+    posResetBase(sec);
+    return;
   }
-  var adj = Math.max(-POS_MAX_ADJ, Math.min(POS_MAX_ADJ, err));
-  var left = POS_NEXT - t;
-  /* 离下一格还早 ⇒ 在剩余时间里扣掉 adj；已经过点（页面卡顿/后台）⇒ 立刻补一格再排下一格 */
-  POS_NEXT = (left > 150) ? (t + Math.max(150, left - adj))
-                          : (t + Math.max(150, 1000 - adj));
+
+  /* ★★★ pl-1.6.24：锁相从「比绝对位置」改成「比增量」—— 这是「一下快一下慢」的根治。
+     p 是**服务端采样时刻**的位置，t 是**响应到达时刻**的墙钟，两者天生差一个完整的
+     HTTP 往返（实测 80~400ms，而且每次都不一样）。旧代码拿 p - POS_SEC*1000 当误差 ⇒
+     每次轮询都把这半秒延迟当成「我走快了 / 走慢了」，每格在 0.7~1.3s 之间随机游走。
+     更隐蔽的是延迟**恒定**时误差也恒定 —— 于是条不是在抖，是在**持续**偏快/偏慢，
+     用户看到的就是「一下快一下慢」（换首歌或换次网络就换个方向）。
+     ⇒ 现在只看：从基准点到现在，真值走了几秒、我们走了几秒。
+       两者相等 ⇒ 一根手指都不碰 POS_NEXT（本地时钟严格 1000ms 一格）；
+       真的差出 2 秒（页面睡醒 / 定时器被节流）才一次性补一格并重设基准。
+     离线复算（_diag/sim_pos.js，180s，延迟 80~400ms 随机）：
+       旧     每格 750~2000ms  σ≈300
+       增量锁 每格 1000~1000ms σ=0（0 次重锚） */
+  if (POS_BASE_SEC < 0) { posResetBase(sec); return; }
+  var derr = (sec - POS_BASE_SEC) - (POS_SEC - POS_BASE_DISP);
+  if (derr > 6 || derr < -6) {                 // 换曲 / 页面休眠很久 ⇒ 直接重锚
+    POS_SEC = sec; POS_NEXT = t + 1000;
+    posResetBase(sec);
+    return;
+  }
+  if (derr >= 2 || derr <= -2) {               // 真漂了 2 秒 ⇒ 跳一格 + 重设基准
+    POS_SEC += (derr > 0 ? 1 : -1);
+    POS_NEXT = t + 1000;
+    posResetBase(sec);
+  }
+  /* 其余情况（含 derr === ±1，那只是采样时刻的整秒量化误差）⇒ 什么都不做 */
 }
 
 /* 每 250ms 扫一次：到点了就 +1 秒。只在真·播放态走，
@@ -847,6 +967,8 @@ function tickPos() {
     /* ★ pl-1.6.13：拖动期间整个插值时钟冻住（POS_NEXT 归零 ⇒ 松手后重新锚定，
        不会带着「拖动期间攒下的秒数」一起跳） */
     if (PR_DRAG || prWait()) { POS_NEXT = 0; return; }
+    /* pl-1.6.24：电台是直播流，没有「播到第几秒」这回事 ⇒ 插值时钟直接停 */
+    if (QRADIO) { POS_NEXT = 0; return; }
     if (PH !== "playing" || !MI) { POS_NEXT = 0; return; }
     var now = Date.now();
     if (!POS_NEXT) POS_NEXT = now + 1000;
@@ -880,6 +1002,12 @@ function coverKey() {
 function paintCover() {
   var im = $("npImg");
   if (!im) return;
+  /* ★ pl-1.6.27：电台不贴封面。
+     台名（其实是 ICY 流标题，如「国际新闻」「CityFM 城市音乐台」）拿去按「歌名+歌手」
+     搜出来的封面/歌手**没有一对是对的**，贴上去纯误导 ⇒ 一律回落成转碟。 */
+  if (QRADIO) {
+    im.removeAttribute("src"); im.className = ""; QPICKEY = ""; return;
+  }
   var k = coverKey();
   if (k !== QPICKEY) {                       // ★ 换歌：旧封面立刻消失
     QPICKEY = k;
@@ -912,6 +1040,13 @@ function toggleLrc() {
   if (LRCOPEN) fetchLrc(true);
 }
 function fetchLrc(force) {
+  /* ★ pl-1.6.27：电台不取歌词（同上：流标题匹配出来的必是错歌），连请求都不发 */
+  if (QRADIO) {
+    LRC = null; LRCKEY = ""; LRCIDX = -1;
+    if ($("lrcHd")) $("lrcHd").textContent = "电台没有歌词";
+    if ($("lrcLines")) $("lrcLines").innerHTML = "";
+    return;
+  }
   var k = lrcKey();
   if (!force && LRC && LRCKEY === k) { renderLrc(); return; }
   var t = (MI && MI.title) || "", a = (MI && MI.artist) || "";
@@ -980,9 +1115,9 @@ function lrcTick(force) {
 function prDur() {
   return (MI && MI.duration) || (mdurSec() * 1000);
 }
-/* 能不能拖：服务端说 seekOk（本地播放态 + 拿得到 Binder）+ 有总时长 + 不是外部推流 */
+/* 能不能拖：服务端说 seekOk（本地播放态 + 拿得到 Binder）+ 有总时长 + 不是外部推流/电台 */
 function prCanSeek() {
-  return PR_OK && prDur() > 0 && !(PTYPE === 2 || PTYPE === 3);
+  return PR_OK && prDur() > 0 && !QRADIO && !(PTYPE === 2 || PTYPE === 3);
 }
 function prPosAt(clientX) {
   if (!PR_BOX) return 0;
@@ -1021,6 +1156,7 @@ function prUp() {
      下一次 syncPos 来就把条拽回那个旧位置 —— 又是一次「退回去的动画」。 */
   POS_SEC = Math.max(0, Math.round(ms / 1000));
   POS_NEXT = Date.now() + 1000;
+  POS_BASE_SEC = -1;                       // 落点变了 ⇒ 锁相基准作废，等真值重新锚
   paintPos(POS_SEC * 1000);
   if (PR_SEEKING) return;                    // 上一次还没回来，别叠
   PR_SEEKING = true;
@@ -1092,6 +1228,32 @@ function doRestart() {
   if (!confirm("重启小智进程？约 3 秒后自动恢复")) return;
   act("restart_app");
 }
+
+/* ---------- 播放引擎切换（pl-1.6.24） ----------
+   引擎实例是 :NetPlayer 的 NetPlayerService.onCreate 里建的，那个进程一辈子只
+   onCreate 一次 ⇒ 运行时换不了实例，只能「写 flag + 重启那个进程」。
+   后端 op=engine 写 files/engine_mp 并 killProcess(:NetPlayer)；它是被 EasyPlayer
+   bindService 绑着的，进程一死系统会重建并把新 binder 交付回来（实测 3~6 秒）。
+   ★ 切换后那一小段时间 /api/status 会短暂吐旧值，所以延迟两轮 load 纠偏。 */
+var ENG = "exo";
+function renderEngine() {
+  var b1 = $("btnEngExo"), b2 = $("btnEngMp"), h = $("engHint");
+  if (b1) b1.className = "btn" + (ENG === "exo" ? " pri" : "");
+  if (b2) b2.className = "btn" + (ENG === "mp" ? " pri" : "");
+  if (h) h.textContent = (ENG === "mp") ? "当前：MediaPlayer（原厂）" : "当前：ExoPlayer 2.18";
+}
+function setEngine(v) {
+  if (v === ENG) { toast("现在就是 " + (v === "mp" ? "MediaPlayer" : "ExoPlayer")); return; }
+  if (!confirm("切换到 " + (v === "mp" ? "MediaPlayer（原厂）" : "ExoPlayer 2.18")
+      + "？\n会重启播放进程，音乐断约 5 秒。")) return;
+  ENG = v;
+  renderEngine();                    // 先乐观上色，真失败的话下一轮 load 会纠正
+  post("/api/act", "op=engine&v=" + v).then(function (r) {
+    toast((r && r.msg) ? r.msg : "已切换");
+    setTimeout(load, 7000);          // 等 :NetPlayer 重建
+    setTimeout(load, 13000);
+  }).catch(function () { toast("切换请求失败"); });
+}
 function doReboot() {
   if (!confirm("整机重启音箱？\n约 30 秒后回来，这期间音箱不可用。")) return;
   act("reboot").then(function (r) {
@@ -1111,18 +1273,50 @@ function doReboot() {
      实测发 mode/color 后 logcat 一条日志都没有（luma/chroma 有
      `PlayerVisualizer: set luma gain:50`）。那两个是小飞魔改版私有的扩展
      （小飞命令表标 min_ver:1848）⇒ 换回原厂就没了，本页已移除这两项。
-     原厂形态 = PlayerVisualizer：15 颗灯同色，色相随音乐频谱缓慢推进。 */
-var AMB = { on: -1 };
+     原厂形态 = PlayerVisualizer：15 颗灯同色，色相随音乐频谱缓慢推进。
+   ★ pl-1.6.32：多彩是氛围灯的**子项**（原厂 / 多彩 二选一），不再是并列的独立开关。
+     氛围灯总开关关着时两档都不生效 ⇒ 页面选「多彩」时会顺手把总开关也打开。 */
+var AMB = { on: -1, mode: "factory" };
 function ambToggle() {
   var on = AMB.on === 1 ? 0 : 1;
   AMB.on = on;
   setSw("swAmb", on === 1);
+  ambModeUI();
   return act("amb", "v=" + (on === 1 ? "on" : "off"));
 }
 function ambFill(a) {
   a = a || {};
   AMB.on = a.on != null ? a.on : -1;
   setSw("swAmb", AMB.on === 1);
+  AMB.mode = S.amb7 ? "multi" : "factory";   // pl-1.6.32：player 侧的灯效档位
+  ambModeUI();
+}
+/* 灯效档位回显。总开关关着时整段压暗 —— 选了也亮不了，别让人以为没点上。 */
+function ambModeUI() {
+  var seg = $("segAmbMode");
+  if (!seg) return;
+  var ds = seg.children;
+  for (var i = 0; i < ds.length; i++) {
+    ds[i].className = (ds[i].getAttribute("data-v") === AMB.mode) ? "on" : "";
+  }
+  seg.style.opacity = (AMB.on === 1) ? "" : "0.42";
+}
+/* pl-1.6.32：切灯效档位。
+   多彩档 ⇒ player 里 Amb 接管每一帧（op=amb7，灯长在 player 里，钩子挂在 LedLight.setColor）；
+   原厂档 ⇒ 摘掉钩子交回原厂单色。两档都只在氛围灯总开关开着时有帧可接。 */
+function setAmbMode(m) {
+  AMB.mode = m;
+  ambModeUI();                       // 乐观上色，失败的话下一轮 load() 会纠正
+  var chain = Promise.resolve();
+  if (m === "multi" && AMB.on !== 1) {
+    AMB.on = 1;                      // 选多彩而总开关还关着 ⇒ 顺手打开，否则钩子等不到帧
+    setSw("swAmb", true);
+    ambModeUI();
+    chain = act("amb", "v=on");
+  }
+  chain.then(function () {
+    return act("amb7", "v=" + (m === "multi" ? "on" : "off"));
+  }).catch(function () { toast("灯效切换失败"); });
 }
 
 /* ---------- Tab ---------- */
@@ -1139,7 +1333,7 @@ function tab(t) {
   if (t === "log") loadLog();
   // 重启后 player 起得晚：进播放/音乐页时立刻重试一次 WS 并补数据，别干等 5s 轮询
   if (t === "play" || t === "music") { wsInit(); wsAsk("get_info"); wsAsk("list"); }
-  if (t === "set") { loadDev(); loadBt(); loadSvc(); }   // 进这页就采，别等轮询
+  if (t === "set") { loadDev(); loadBt(); loadSvc(); renderEngine(); }   // 进这页就采，别等轮询
 }
 
 /* ---------- 开关 ---------- */
@@ -1284,8 +1478,10 @@ function doSearch(ol, rnd) {
   // v1.3.175：ol=1 ⇒ 带 online=1（池内没搜到时附带 NAS 全源在线结果）
   // v1.3.178：rnd=1 ⇒ 关键词留空点「在线搜歌」= 从在线随机拉一批（每次都是新的一批）
   // v1.3.180：条数统一走「在线曲目上限」OLIM（以前随机批写死 100、关键词在线默认 20）
+  // v1.3.198：留空点「搜索」（= 列全部）带上 shuffle=1 ⇒ 每次都是新的一批。
+  //   以前按下标原序取前 N 首，一千多首的库里翻来覆去永远是同样那几首。
   fetch("/api/search?k=" + encodeURIComponent(k)
-    + (k ? "" : "&limit=" + (QLIM || 0))
+    + (k ? "" : ("&limit=" + (QLIM || 0) + "&shuffle=1"))
     + (ol ? ("&online=1&olimit=" + OLIM) : "")
     + (rnd ? "&random=1" : ""))
     .then(function (r) { return r.json(); })
@@ -1404,13 +1600,50 @@ function playRes(i) {
   if (it.artist) q += "&artist=" + encodeURIComponent(it.artist);
   act("play_url", q);
 }
-function doArtist() {
-  var a = v("qArt").trim();
-  if (!a) return;
-  // ★ 数量留空 ⇒ 传 0 = 该歌手的全部歌曲都排进播放列表（服务端 count<=0 = 不限量）。
-  //   以前空着会补 5，用户想要「全部」只能手动填一个很大的数。
-  var c = v("qCnt").trim();
-  act("play_artist", "artist=" + encodeURIComponent(a) + "&count=" + (c ? c : 0));
+/* v1.3.196：「全部载入播放列表」—— 把当前搜索结果整批排进播放列表。
+   以前想连播只能一首首点（点一条只播一条，列表根本没动）。
+
+   v1.3.198：三段结果三种走法，别混：
+     ① **在线随机批**（每条带 ri）—— 整批已经在服务端缓存好，
+        直接 play_rand_at&i=0 就是「这一批从头播」；
+     ② **在线关键词结果**（title/artist/source/rid，没有曲库序号）
+        ⇒ 新的 op=queue_online，整批四件套发过去，服务端推惰性地址；
+     ③ **曲库结果**（带 index）⇒ op=queue_all（ids=曲库序号）。
+   两段同时存在时（关键词搜索会同时出曲库段和在线段）载**在线段**
+   —— 点「在线搜歌」的人要的就是在线那些，曲库段本来就在库里随时能点。 */
+function queueAll() {
+  var ids = [], on = [], rnd = false;
+  for (var i = 0; i < SRES.length; i++) {
+    if (SRES[i] && SRES[i].index) ids.push(SRES[i].index);
+  }
+  for (var j = 0; j < SRES_ON.length; j++) {
+    var it = SRES_ON[j];
+    if (!it) continue;
+    if (it.ri === 0 || it.ri > 0) { rnd = true; continue; }   // 随机批
+    if (it.source && it.rid) {
+      on.push({
+        title: it.title || "", artist: it.artist || "",
+        source: it.source, rid: it.rid,
+        album: it.album || "", duration: it.duration || ""
+      });
+    }
+  }
+  if (rnd) {                       // ① 在线随机批：整批已在服务端
+    act("play_rand_at", "i=0").then(function (r) { if (r && r.ok) loadQueue(); });
+    return;
+  }
+  if (on.length) {                 // ② 在线关键词结果
+    act("queue_online", "items=" + encodeURIComponent(JSON.stringify(on)))
+      .then(function (r) { if (r && r.ok) loadQueue(); });
+    return;
+  }
+  // ③ 曲库结果
+  if (!ids.length) {
+    if (!confirm("还没有搜索结果，要载入整个曲库吗？")) return;
+  }
+  act("queue_all", ids.length ? ("ids=" + ids.join(",")) : "").then(function (r) {
+    if (r && r.ok) loadQueue();
+  });
 }
 /* ---------- 电台列表（v1.3.156） ----------
    原来是横排 chips，台一多就占满整屏（实测 48 个台）。改成和「搜索曲库 / 播放队列」一样的
@@ -1427,8 +1660,10 @@ function renderRadios() {
   var box = $("radios"), hint = $("radioHint");
   // 名单、选中项、过滤词都没变就别重建 —— load() 每 8 秒一次，重建会把用户滑到第 20 个台的
   // 滚动位置弹回顶部（这是列表化之后新引入的问题，chips 时代没有）。
+  /* pl-1.6.27：签名里去掉 curRadio —— 高亮没了，它变化就不该再触发整块重建
+     （重建会把列表滚回顶部，用户翻到第 20 个台再点一下就被弹回去了） */
   var sig = RADIOS.map(function (r) { return r.name || r.title || ""; }).join("\u0001")
-    + "\u0002" + curRadio + "\u0003" + radioFilt;
+    + "\u0003" + radioFilt;
   if (sig === radioSig) return;
   radioSig = sig;
 
@@ -1452,22 +1687,32 @@ function renderRadios() {
     return;
   }
   box.innerHTML = shown.map(function (o) {
-    var on = !!curRadio && curRadio === o.nm;
-    return '<div class="li rad' + (on ? " cur" : "") + '" onclick="playRadioAt(' + o.i + ')">'
+    /* ★ pl-1.6.27：电台列表**不再打「正在收听」高亮**。
+       以前靠 device 回推的 curTitle 反查台名来标红 ⇒ 切台时上一个台还在缓冲、
+       curTitle 迟迟不变，红条先跳回旧台、等新台起播再跳回来（来回闪一下）。
+       而且电台的 curTitle 是 ICY 流标题，跟列表里的台名常常对不上 ⇒ 这个高亮
+       根本没有可信来源。现在跟音乐列表一致：按下有反馈、点完给一句 toast。 */
+    return '<div class="li rad" onclick="playRadioAt(' + o.i + ', this)">'
       + '<div class="n">' + (o.i + 1) + "</div>"
       + '<div class="tx"><div class="a">' + esc(o.nm) + "</div>"
-      + '<div class="b">' + (on ? "正在收听" : "网络直播") + "</div></div></div>";
+      + '<div class="b">网络直播</div></div></div>';
   }).join("");
 }
-function playRadioAt(i) {
+/* ★ pl-1.6.27：点一下闪一下（200ms）—— 取流要 1~2 秒，中间没有反馈会以为没点到 */
+function playRadioAt(i, el) {
   var r = RADIOS[i];
   if (!r) return;
+  if (el) {
+    el.className = "li rad hit";
+    setTimeout(function () { el.className = "li rad"; }, 220);
+  }
   playRadio(r.name || r.title || "");
 }
 function playRadio(n) {
   if (!n) return;
-  curRadio = n;                 // 先标红再发请求，点完立刻有反馈（取流要等 1~2 秒）
-  renderRadios();
+  /* curRadio 只是记账（语音换台时用来比对），不再驱动列表高亮 */
+  curRadio = n;
+  toast("正在切到「" + n + "」…");
   act("radio", "name=" + encodeURIComponent(n));
 }
 
@@ -1484,9 +1729,16 @@ function setKV2(o) {
 function useOfficial() { $("inOta").value = ""; $("inWs").value = ""; saveServer(); }
 function saveIndex() { setKV2({ musicIndex: v("inIdx") }); }
 
-/* ---------- 赞赏码 ---------- */
-function showDonate() { $("donate").style.display = "grid"; }
-function hideDonate() { $("donate").style.display = "none"; }
+/* ---------- 赞赏 / 讨论群（两个独立弹窗） ---------- */
+function showQR(id) {
+  $("donate").style.display = "none";
+  $("group").style.display = "none";
+  $(id).style.display = "grid";
+}
+function hideQR() {
+  $("donate").style.display = "none";
+  $("group").style.display = "none";
+}
 
 /* ---------- 日志 ---------- */
 function loadLog(n) {
@@ -1900,6 +2152,8 @@ function load() {
     var a = S.audio || {};
     var m = S.music || {};
     var actv = S.activation || {};
+    /* pl-1.6.24：当前播放引擎（exo / mp）—— 设置页那颗按钮回显 */
+    if (s.engine) { ENG = String(s.engine); renderEngine(); }
     /* pl-1.6.9（二）：列表元数据里的时长（"03:38"）—— 真实总时长出来之前先顶上，
        这样在线歌在缓冲的那十几秒里，卡片也已经写着这首歌有多长。 */
     MDUR = m.curDuration || "";
@@ -1920,6 +2174,8 @@ function load() {
       // ★ pl-1.6.9（三）：电台标签以前由下面的 device 兜底块渲染，player 直供时
       //   那块不进了 ⇒ 交给 renderNp()（不然电台会被标成「本地曲库」）
       QRADIO = !!m.qRadio;
+      // ★ pl-1.6.25：还没判明就别贴着「本地曲库」—— 等真时长 / 直播结论（约 0.6s）
+      QUNK = !!m.liveUnknown;
       // ★ pl-1.6.10：在线歌同理 —— PTYPE 对在线歌也是 1（本地曲库），
       //   标签必须跟 curVia 走，不然「在线搜到的 / 在线随机」全被标成本地。
       QVIA = String(m.curVia || "");
@@ -1940,6 +2196,8 @@ function load() {
       if (m.curAlbum && m.curAlbum !== "Radio" && m.curAlbum !== m.curTitle) pm.push(m.curAlbum);
       if (MDUR) pm.push(MDUR);
       $("npMeta").textContent = pm.join(" · ");
+      /* pl-1.6.29：码率 / 格式（含电台） */
+      readQual(m); paintQual();
       if (extOn) {
         $("npNote").textContent = "手机 " + (PTYPE === 2 ? "DLNA" : "AirPlay")
           + " 推流中 —— 声音走推流通道；网页播放/切歌只对本地队列生效，不影响推流";
@@ -2087,6 +2345,8 @@ function load() {
       if (m.curAlbum && m.curAlbum !== "Radio" && m.curAlbum !== m.curTitle) _pm.push(m.curAlbum);
       if (m.curDuration) _pm.push(m.curDuration);
       $("npMeta").textContent = _pm.join(" · ");
+      /* pl-1.6.29：码率 / 格式（device 兜底版拿不到 ⇒ 这行是空的，页面自己留白） */
+      readQual(m); paintQual();
       QPIC = String(m.curPic || "");   // pl-1.6.16：老 device 版兜底块也要带封面
       $("npNote").textContent = m.stale
         ? "上次播过的曲名（player 重启后列表已空）—— 点 ▶ 会重新播放它"
@@ -2238,7 +2498,7 @@ function saveQlim() {
 }
 
 /* v1.3.180：**在线曲目上限**（默认 300，10~300）。
-   所有从 NAS 拉在线歌的途径统一按它来：按歌手连播补的在线曲目、「随机播放在线音乐」、
+   所有从 NAS 拉在线歌的途径统一按它来：语音说「播放周杰伦的歌」补的在线曲目、「随机播放在线音乐」、
    页面「在线搜歌」。存在 device 的 files/online_max 里（不是浏览器 localStorage）——
    语音发起的那些请求根本不经过网页，只有落在设备上才管得住。 */
 var OLIM = 300;
@@ -2282,6 +2542,7 @@ function renderNp() {
     /* ★ pl-1.6.10：换曲 ⇒ 插值状态清零。不清就会拿上一首的进度继续累加，
        再被下一次轮询的真值硬拽回来 ⇒ 显示跳。 */
     POS_SEC = 0; POS_INIT = false; POS_NEXT = 0; POS_DUR = 0;
+    POS_BASE_SEC = -1;                 // pl-1.6.24：锁相基准一起作废
     /* 换曲 ⇒ seek 生效窗口一并作废（拖到 100% 会触发换曲，不清就锁死在旧落点了） */
     PR_SEEK_WAIT = false; PR_SEEK_TILL = 0;
     /* pl-1.6.16：换曲 ⇒ 旧歌词作废；面板开着就立刻去取新这首的 */
@@ -2296,6 +2557,9 @@ function renderNp() {
   if (QRADIO) { tag.style.display = "inline-block"; tag.textContent = "电台"; }
   else if (QVIA === "online") { tag.style.display = "inline-block"; tag.textContent = "在线搜到的"; }
   else if (QVIA === "rand") { tag.style.display = "inline-block"; tag.textContent = "在线随机"; }
+  /* ★ pl-1.6.25：还没判明通道类型（时长未到）⇒ 干脆不显示标签。
+     以前这里走到 names[1] 就写「本地曲库」，Exo 起播头半秒就被贴错，3 秒后才改口。 */
+  else if (QUNK) { tag.style.display = "none"; }
   else if (PTYPE && names[PTYPE]) { tag.style.display = "inline-block"; tag.textContent = names[PTYPE]; }
   else tag.style.display = "none";
 
@@ -2307,7 +2571,20 @@ function renderNp() {
   var wait = (PH === "loading");
   $("cover").className = "cover"
     + (PH === "playing" ? " spin" : (wait ? " wait" : ""));
-  paintCover();   // pl-1.6.16：有封面就盖在转碟上
+  /* ★ pl-1.6.27：电台没有歌词 —— 拿 ICY 流标题去匹配，回来的一定是别的歌。
+     按钮直接藏掉；面板开着就顺手收起来，免得留着上一次的旧词。 */
+  var lrcBtn = $("bLrc");
+  if (lrcBtn) lrcBtn.style.display = QRADIO ? "none" : "";
+  if (QRADIO && LRCOPEN) {
+    LRCOPEN = false;
+    var lbox = $("lrcBox");
+    if (lbox) lbox.className = "lrcbox";
+    LRC = null; LRCKEY = ""; LRCIDX = -1;
+    var lh = $("lrcHd"), ll = $("lrcLines");
+    if (lh) lh.textContent = "电台没有歌词";
+    if (ll) ll.innerHTML = "";
+  }
+  paintCover();   // pl-1.6.16：有封面就盖在转碟上（电台内部会自己退回转碟）
   var ic = $("icPlay");
   ic.innerHTML = (PH === "playing" || wait)
     ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>'
@@ -2341,10 +2618,13 @@ function renderNp() {
     e.style.pointerEvents = ext ? "none" : "";
   });
 
-  // 电台高亮跟随：语音换台时 MI.title 会等于台名（不相等多半是 ICY 流标题，就保持原样）
+  /* ★ pl-1.6.27：删掉「电台高亮跟随」—— 用设备回推的 curTitle 反查台名来标红。
+     切台时上一台还在缓冲、curTitle 迟迟不变 ⇒ 红条先跳回旧台、新台起播再跳回来。
+     高亮本身也已在 renderRadios 里去掉，这里只留记账（语音换台后 curRadio 跟着走），
+     但**不再重建列表**（重建会把滚动位置弹回顶部）。 */
   if (t && RADIOS.length && t !== curRadio) {
     for (var i = 0; i < RADIOS.length; i++) {
-      if ((RADIOS[i].name || RADIOS[i].title) === t) { curRadio = t; renderRadios(); break; }
+      if ((RADIOS[i].name || RADIOS[i].title) === t) { curRadio = t; break; }
     }
   }
 }
@@ -2487,7 +2767,21 @@ function playOrRandom() {
   act("play");
 }
 function togglePlay() {
-  if (PSTATE) { act("pause"); return; }
+  if (PSTATE) {
+    /* ★ pl-1.6.27：暂停必须**立刻**停表 —— 乐观更新，别等轮询。
+       以前只发 act("pause")，UI 要等下一次 8 秒的 /api/status 才刷新
+       （服务端那边 phase() 还有一条「进度 4 秒内变过 ⇒ 当在播」的宽限要熬）；
+       而 tickPos 每 250ms 照着 PH==="playing" 推进 ⇒ 声音早停了、图标还是「暂停」、
+       进度条还在走，实测长的要十几秒才变。
+       现在：先就地置 idle 并重渲染（图标回 ▶、唱片停转、插值时钟归零），
+       800ms 后再拉一次真值校准 —— 万一 op 失败，那一次 load 会把状态纠正回来。 */
+    act("pause");
+    PSTATE = 0; PH = "idle"; STALL = false;
+    POS_BASE_SEC = -1; POS_NEXT = 0;   // 增量锁相基准作废 ⇒ 插值当场停摆
+    renderNp();
+    setTimeout(load, 800);
+    return;
+  }
   playOrRandom();
 }
 /* 上一首/下一首：发完指令主动补一次（play_at/next 都要等 player 回推总线才知道
