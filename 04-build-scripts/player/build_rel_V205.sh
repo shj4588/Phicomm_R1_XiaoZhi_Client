@@ -1024,6 +1024,9 @@ chk "$SRCS/PCtl.java"       '引擎进程读标记兜底'   'abNoSkipOnErr[引�
 chk "patch_abnoskip.py"     '闸门标记'             'r1web: 有声书/节目失败不跳集'
 chk "patch_abnoskip.py"     '闸门调用 PCtl'        'PCtl;->abNoSkipOnErr()Z'
 chk "patch_abnoskip.py"     '闸门原地停'           ':abns_off'
+chk "$SRCS/PCtl.java"       '队尾即停判据'         'public static boolean stopAtListEnd(int mode, int pos, int size)'
+chk "patch_list_end.py"     '队尾闸门标记'         'r1web: 列表循环队尾即停'
+chk "patch_list_end.py"     '队尾闸门调用 PCtl'    'PCtl;->stopAtListEnd(III)Z'
 chk "$SRCS/Ui.java"      'saveQlim 0 也落盘'    'post(\"/api/set\", \"playlistMax=\" + n);'
 # ---- pl-1.6.127：/r/prog、/r/fav 解析不到 ⇒ 空流（绝不回 404+"no source" 纯文本喂播放器）----
 chk "$SRCS/WebSrv.java"    'prog 无源空流'      '⇒ 空流，不给非音频'
@@ -1787,6 +1790,8 @@ cp -f smali_$V/cn/workbuddy/r1web/*.smali smali_build_$V/cn/workbuddy/r1web/
 "$PY" patch_pause_idem.py smali_build_$V/com/phicomm/speaker/player/model/new_NetPlayer.smali || exit 1
 # pl-1.6.124：有声书/节目行播放失败 ⇒ 引擎不跳下一集（原地停）。两个引擎都要插。
 "$PY" patch_abnoskip.py smali_build_$V/com/phicomm/speaker/player/model/new_NetPlayer.smali smali_build_$V/com/phicomm/speaker/player/model/NetPlayer4.smali || exit 1
+# 列表循环（顺序播放）播到队尾即停，不再回卷到第 0 首（单曲队列 = 单曲循环）；节目行保持回卷。两个引擎都要插。
+"$PY" patch_list_end.py smali_build_$V/com/phicomm/speaker/player/model/new_NetPlayer.smali smali_build_$V/com/phicomm/speaker/player/model/NetPlayer4.smali || exit 1
 # 临时诊断开关（R1DBG=1）：给 PlayerBinderWrapper$2 里所有静默 catch(Exception)
 # 插入 printStackTrace + Logger.d —— 用来抓 pause/start 返回 false 的真凶。
 "$PY" patch_amb.py smali_build_$V/com/phicomm/speaker/player/light/LedLight.smali || exit 1

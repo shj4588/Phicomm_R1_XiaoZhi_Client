@@ -590,6 +590,127 @@ public final class SessionController implements
     /** farewellEndTask 是否已排队（enterIdle / barge-in 要撤） */
     private volatile boolean farewellActive = false;
 
+    // ============ 退出词：用户说「再见 / 关机」等 → 播放暂停 + 回复播完即结束会话 ============
+    /**
+     * 以前用户说「再见」「关机」，服务器回一句「好的，再见」之后会话照样挂着，
+     * 要等续听窗口（60s / 90s）耗尽才回 IDLE，期间拾音灯一直亮；唤醒时让路的音乐
+     * 还会在会话结束后被 MusicResume 自动接回来。
+     * 现在结束用语 = 音箱整体安静：
+     *   ① 立刻暂停播放（走 dispatch("pause")，与用户说「暂停」同一路径，
+     *      含 MusicResume.noteUserPause() ⇒ 会话收尾后不再自动恢复；之后说「继续播放」可接着听）；
+     *   ② 本轮 TTS 播完走 serverFarewell 同一条收尾路径（farewellEndTask 等本地播完再 ws.close）；
+     *      服务器不发 tts stop（告别语常见）或迟迟不开口，由 userExitWatch 兜底关闭。
+     * 只认 STT 的**最后一个分句整段**是退出词（允许前后带「小智」、句尾语气词，
+     * 「油滑溜溜的，再见」这类前面带半句的也算），
+     * 「播放再见青春」「关机了怎么开」这类句子不会命中。「关机」只结束对话和播放，不碰系统电源。
+     */
+    private static final java.util.regex.Pattern EXIT_WORD_RE = java.util.regex.Pattern.compile(
+            "^(小智)?(好了|好的|好|那)?(再见|拜拜|关机|退下|不聊了|结束对话|没事了)"
+                    + "(吧|了|啦|哦|呀|喽)*(小智)?$");
+
+    /** 命中退出词后等服务器回复的上限：超时仍没有 TTS 就直接收会话 */
+    private static final long USER_EXIT_FALLBACK_MS = 8000L;
+
+    /**
+     * 退出词回复「下行音频静默多久算讲完」：官方服务器念告别语时常常**不发 tts stop**
+     * （实测「关机」→ 三句告别 sentence_end 之后再无下文，只能等 15s 的 tts-stale），
+     * 所以不能只靠 onTtsStop 收尾。留 3s 是给句间的工具调用（实测 tts start → 首帧 2.2s）。
+     */
+    private static final long USER_EXIT_QUIET_MS = 3000L;
+
+    /** 本轮 STT 命中退出词：停上行、onTtsStop 播完即关（唤醒 / 新会话 / enterIdle 才清零） */
+    private volatile boolean userExit = false;
+
+    /** 命中退出词的时刻（elapsedRealtime）—— userExitWatch 判「服务器开口没有」 */
+    private volatile long userExitMs = 0L;
+
+    /** 最近一个 TTS **音频帧**的时刻（只在 onTtsAudio 更新；lastTtsFrameMs 在 onTtsStart 也会刷新） */
+    private volatile long lastTtsAudioMs = 0L;
+
+    /**
+     * STT 是不是以退出词收尾：取**最后一个分句**（按标点 / 空白切开），去掉符号后整段匹配。
+     * STT 常把前面半句一起带上（实测「油滑溜溜的，再见。」），所以不要求整句只有退出词；
+     * 但最后一段必须**整段**是退出词，「播放再见青春」「怎么关机」不会命中。
+     */
+    static boolean isExitWord(String text) {
+        if (text == null) {
+            return false;
+        }
+        String[] parts = text.split("[\\p{P}\\s]+");
+        for (int i = parts.length - 1; i >= 0; i--) {
+            String t = parts[i].replaceAll("[\\p{S}]", "");
+            if (t.length() > 0) {
+                return EXIT_WORD_RE.matcher(t).matches();
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 退出词收尾看护（每 500ms）：服务器发了 tts stop 就由 onTtsStop 收尾（这里随 clearUserExit 撤掉）；
+     * 没发的话 —— 出过声：音频帧静默 ≥ USER_EXIT_QUIET_MS 且本地播完 ⇒ 关；
+     * 一直没出声：USER_EXIT_FALLBACK_MS 到点 ⇒ 关。
+     */
+    private final Runnable userExitWatch = new Runnable() {
+        public void run() {
+            if (!userExit || state == State.IDLE) {
+                return;
+            }
+            long now = android.os.SystemClock.elapsedRealtime();
+            boolean spoke = lastTtsAudioMs > userExitMs;
+            TtsPlayer p = player;
+            boolean drained = (p == null) || !p.isPlaying() || p.isDrained();
+            String why = null;
+            if (spoke && drained && now - lastTtsAudioMs >= USER_EXIT_QUIET_MS) {
+                why = "reply finished (no tts stop, audio quiet " + (now - lastTtsAudioMs) + "ms)";
+            } else if (!spoke && now - userExitMs >= USER_EXIT_FALLBACK_MS) {
+                why = "no TTS within " + (USER_EXIT_FALLBACK_MS / 1000) + "s";
+            }
+            if (why == null) {
+                main.postDelayed(this, 500L);
+                return;
+            }
+            userExit = false;
+            String m = "exit word: " + why + " -> closing session";
+            Log.i(TAG, m);
+            SessionLog.i(m);
+            ws.close("user-exit");
+        }
+    };
+
+    private void clearUserExit() {
+        userExit = false;
+        main.removeCallbacks(userExitWatch);
+    }
+
+    /**
+     * onStt 调用：整句命中退出词 ⇒ 锁定本次会话 —— 立刻停上行（音频帧闸口认 userExit），
+     * 之后不管用户再说什么都不处理、也不会撤销；
+     * 只有唤醒词（handleWakeup → clearUserExit）能解锁，要继续对话须重新喊「小智小智」。
+     */
+    private void checkExitWord(String text) {
+        if (userExit || !isExitWord(text)) {
+            return;
+        }
+        userExit = true;
+        userExitMs = android.os.SystemClock.elapsedRealtime();
+        main.postDelayed(userExitWatch, 500L);
+        String m = "exit word \"" + text + "\" -> pause playback, end session after this reply";
+        Log.i(TAG, m);
+        SessionLog.i(m);
+        // 总线发送不放主线程（与 MCP 工具调用 dispatch 的线程模型一致）
+        new Thread(new Runnable() {
+            public void run() {
+                try {
+                    SessionLog.i("exit word pause => "
+                            + PlayerBridge.dispatch("pause", new org.json.JSONObject()));
+                } catch (Throwable t) {
+                    Log.w(TAG, "exit word pause: " + t);
+                }
+            }
+        }, "exit-pause").start();
+    }
+
     /** CONNECTING 期间 pending 缓冲上限（60ms/帧，250 帧 = 15s） */
     private static final int MAX_PENDING_FRAMES = 250;
 
@@ -1468,6 +1589,7 @@ public final class SessionController implements
             return;
         }
         lastWakeupMs = now;
+        clearUserExit();            // 退出词锁定只有唤醒词能解（见 checkExitWord）
         wakeMs = now;               // v1.3.14：延迟埋点基准
         latFirstUplinkMs = 0L;
         latSttMs = 0L;
@@ -1791,6 +1913,7 @@ public final class SessionController implements
         serverFarewell = false;
         main.removeCallbacks(farewellEndTask);
         farewellActive = false;
+        clearUserExit();
         setState(State.CONNECTING);
         synchronized (uplinkDump) {
             uplinkDump.clear(); // v1.3.3：dump 只覆盖本会话
@@ -1920,6 +2043,7 @@ public final class SessionController implements
         main.removeCallbacks(farewellEndTask); // v1.3.23：告别收尾一并撤
         serverFarewell = false;
         farewellActive = false;
+        clearUserExit();
         boolean wasSession = (state != State.IDLE);
         if (wasSession) {
             // v1.3.20：一行定性「这次没回复到底怪谁」——
@@ -2220,7 +2344,8 @@ public final class SessionController implements
         // ~400ms 播放轨排空 ⇒ HAL 回声抑制失配 ⇒ 泄漏 raw 44~144 与人声 52~112 重叠，
         // 这些帧上行必被服务端当成插话（这就是「被小智自己的声音打断」）。
         boolean bargeIn = bargeInAllowed();
-        if (suppressUplink || (state != State.LISTENING && !bargeIn)) {
+        // 退出词锁定期（userExit）一律不上行：用户已说「再见 / 关机」，之后的话不再交给服务器
+        if (suppressUplink || userExit || (state != State.LISTENING && !bargeIn)) {
             return;
         }
         // v1.3.2：补发进行中实时帧改道排队（服务器端时间线单调，防交错）
@@ -2543,6 +2668,7 @@ public final class SessionController implements
         }
         touchDownlink();     // v1.3.16
         lastTtsFrameMs = android.os.SystemClock.elapsedRealtime();  // v1.3.16：喂静默看门狗
+        lastTtsAudioMs = lastTtsFrameMs;   // 退出词看护只认真实音频帧（onTtsStart 不算开口）
         // v1.3.14：延迟埋点 —— STT 出字 -> 服务器首个 TTS 音频帧
         if (latFirstTtsMs == 0L) {
             latFirstTtsMs = android.os.SystemClock.elapsedRealtime();
@@ -2635,8 +2761,11 @@ public final class SessionController implements
         // 用户此时唤醒 -> 话喂进死 socket -> 探测 7s 才重启 -> 影子回放丢头 ->
         // 8s 延迟 + 丢字（2026-10-04 18:19 实测）。现在：播完即关，回 IDLE，
         // 下一次唤醒走全新会话（应答音 + 1.2s 预缓冲补发），既不静默也不丢字。
-        if (serverFarewell) {
+        // 退出词（userExit）同样走这里：用户已说「再见 / 关机」，回复播完就收会话。
+        if (serverFarewell || userExit) {
+            boolean byUser = userExit;
             serverFarewell = false;
+            clearUserExit();
             farewellActive = true;
             suppressUplink = true;   // 告别语还在喇叭里，别把回声喂回服务器
             setState(State.LISTENING); // 保持状态自洽（上行被 suppressUplink 挡住）
@@ -2644,7 +2773,8 @@ public final class SessionController implements
             main.removeCallbacks(idleAlertTask);
             main.removeCallbacks(farewellEndTask);
             main.postDelayed(farewellEndTask, 800L);
-            String fm = "server farewell -> end session after playback"
+            String fm = (byUser ? "user exit word" : "server farewell")
+                    + " -> end session after playback"
                     + " (skip " + (listenIdleMs / 1000) + "s listen idle)";
             Log.i(TAG, fm);
             SessionLog.i(fm);
@@ -2764,6 +2894,7 @@ public final class SessionController implements
         disarmWakeProbe();   // v1.3.19：服务器听懂了 = 会话是活的，探测解除
         clearShadow();
         sttThisTurn = true;  // v1.3.23：有 STT = 服务器确实在回应，本轮不可能是「空闲告别」
+        checkExitWord(text);
         // v1.3.147：服务器听懂了 ⇒ 用户在等回答 ⇒ 拾音灯换蓝色播报灯（原厂是在
         // onASREventRecordingStop 做这件事：关掉方向灯 + turnOnLoadingLight）。
         R1Lights.busyOn();

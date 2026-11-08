@@ -1611,6 +1611,28 @@ public final class PCtl {
         return f;
     }
 
+    /**
+     * 列表循环（mode=2）自然播完最后一首时，是否原地停、不回卷到第 0 首。
+     *
+     * <p>原厂 {@code getNextPosition} 在队尾一律回卷：队列只有一首（语音点一首在线歌、
+     * 点名一集故事）时就成了单曲循环，播完一遍又从头放。现在队尾播完即停；
+     * 手动「下一首」不经过这里，照旧可以回到第一首。</p>
+     *
+     * <p>节目行（有声书）例外、保持回卷 —— device 的 tail-kick 靠「回卷」续拉下一批。
+     * 节目判据复用 {@link #abNoSkipOnErr()}（引擎进程读主进程写的 r1_abnow 标记）。
+     * 由引擎 HandlePlayCompleted / HandlePlayerBufferingCompleted 的 smali 闸门
+     * （patch_list_end.py）调用。</p>
+     */
+    public static boolean stopAtListEnd(int mode, int pos, int size) {
+        if (mode != 2 || size <= 0 || pos < size - 1) {
+            return false;
+        }
+        boolean ab = abNoSkipOnErr();
+        Boot.log("stopAtListEnd pos=" + pos + "/" + size + " 节目行=" + ab
+                + (ab ? " ⇒ 保持回卷" : " ⇒ 队尾停"));
+        return !ab;
+    }
+
     private static String ok(boolean r, String what) {
         Boot.log(what + " => " + r);
         return (r ? "OK " : "ERR ") + what;
