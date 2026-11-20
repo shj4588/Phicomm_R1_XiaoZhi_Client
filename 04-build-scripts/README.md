@@ -140,6 +140,10 @@ V2.0.5 已具备、本版继续沿用的：整本集表缓存 / play-first、我
 
 ## 版权与免责
 
-本项目完全免费，不做任何收费，仅供学习交流，请勿用于商业用途。
-`uni_smali/`、`smali_echo/`、`EchoService_system.apk` 的来源是斐讯 R1 原厂固件里的应用，
-仅作互操作与学习用途；相关权利归原厂及其授权方所有。
+本项目采用 **[PolyForm Noncommercial 1.0.0](../LICENSE)**（非商业许可）：可自用、可修改、
+可送人，**不可商业使用**（卖刷好的机器、收费刷机、内置进商业产品都不行）。
+
+本许可只覆盖本目录下由作者原创的构建脚本、补丁脚本与 `cn.workbuddy.r1client` /
+`cn.workbuddy.r1web` 的 Java 源码。`uni_smali/`、`smali_echo/`、`EchoService_system.apk`、
+`Unisound.apk` 的来源是斐讯 R1 原厂固件里的应用，仅作互操作与学习用途，**版权归原厂及其
+授权方所有，不在本许可授权范围内**。第三方组件清单见 [NOTICE.md](../NOTICE.md)。

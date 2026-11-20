@@ -1,5 +1,12 @@
 # Phicomm R1 专用小智 —— V2.0.6 发布说明
 
+[![license: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-2f6f4e)](LICENSE)
+[![usage: personal / noncommercial](https://img.shields.io/badge/usage-personal%20%2F%20noncommercial-555)](NOTICE.md)
+
+> **仅供个人非商业使用**（PolyForm Noncommercial 1.0.0）：可以自用、改、给朋友，
+> **不可以**卖、不可以做收费刷机、不可以拿去做商业产品。原厂 APK 与反编译留档
+> 版权不归本项目所有，详见 [NOTICE.md](NOTICE.md)。
+
 本仓库是**源码与构建输入**，不是装机压缩包：
 
 - 构建源码：`04-build-scripts/`（device = 寄生原厂 Pandora，player = 寄生原厂 EchoService）
@@ -237,4 +244,43 @@ R1 作为 MCP 端点注册到小智服务端，工具分四组前缀：`self.r1p
 
 https://github.com/shj4588/Phicomm_R1_XiaoZhi_Client
 
-本项目完全免费，不做任何收费。仅供学习交流，请勿用于商业用途。
+配套服务端（媒体库）：https://github.com/shj4588/MyXiaoZhi_MediaServer
+
+---
+
+## 许可
+
+本项目采用 **[PolyForm Noncommercial 1.0.0](LICENSE)**（非商业许可）。
+
+**允许**：自己刷机使用、读源码、改代码、修 bug、给朋友刷、提 PR。
+**不允许**：任何商业用途 —— 卖刷好的机器、收费刷机服务、内置进商业产品；
+企业或机构内部使用也算商业用途，需另行授权。
+
+### 为什么不用 MIT / AGPL
+
+| 许可 | 挡得住「有人拿这个包刷好机器去卖」吗 |
+|---|---|
+| MIT / Apache-2.0 | ❌ 完全挡不住 |
+| AGPL-3.0 | ❌ 挡不住。他只要附上源码，卖机器完全合法 —— AGPL 只挡「闭源分发」，不挡商业 |
+| **PolyForm Noncommercial 1.0.0** | ✅ 商业用途本身就不在授权范围内 |
+
+代价也说清楚：它不是 OSI 认可的开源许可，GitHub 侧栏不会显示徽标（识别为 Other）；
+与 GPL / AGPL 不兼容，不能被 GPL 项目合并；想商用必须单独取得授权。
+
+### 范围
+
+- ✅ **本许可覆盖**：`04-build-scripts/` 的构建脚本、补丁脚本、Janus 拼包脚本，
+  以及 `cn.workbuddy.r1client` / `cn.workbuddy.r1web` 的 Java 源码与本文档
+- ❌ **不覆盖**：`03-stock-rom/`、`02-reverse-smali/`、`05-reverse-docs/` 里的原厂代码与产物
+  （版权归斐讯 / 云知声，本项目不主张也不授予任何权利），以及 `javacp/`、`libr1opus.so`
+  等第三方组件（各自保留原许可）
+
+第三方组件许可（OkHttp / Okio / Kotlin stdlib / sherpa-onnx = Apache-2.0，
+JSON-java = JSON License，libopus = BSD-3-Clause）与上述范围声明见 [NOTICE.md](NOTICE.md)。
+**分发自己构建的 APK 时请一并附带该文件**，这是 Apache-2.0 与 BSD-3-Clause 的要求。
+
+### 免责
+
+本项目用 Janus（CVE-2017-13156）签名绕过，让自有代码跑进原厂包的 `platform_app` 域以取得
+四麦阵列 HAL。**只用于你本人拥有的设备**，刷机风险自负；不含任何音乐/有声书资源，
+也不用于规避付费内容或他人设备的授权校验。
