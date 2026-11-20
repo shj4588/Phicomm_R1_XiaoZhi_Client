@@ -24,3 +24,5 @@
 *.jar binary
 *.jks binary
 *.wav binary
+# 许可与声明：显式固定行尾，避免 checkout 时被 autocrlf 改写
+LICENSE text eol=lf
