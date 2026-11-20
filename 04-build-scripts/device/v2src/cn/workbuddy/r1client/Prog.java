@@ -338,6 +338,38 @@ public final class Prog {
         return false;
     }
 
+    /**
+     * ★ 1.3.333：历史「错误缓存」里缺集占位行的标题特征。
+     * v1.6.x 遗留的是「（缺集 · 上游没有第 N 集）」，服务端 v1.7.9 起缺集行
+     * 只输出「第 N 集」；真集是「书名 第N集 真名」，不会命中。
+     * 带这种标题的行即使残留了假 rid，也要重新问服务端拿真名/真 rid。
+     */
+    public static boolean isDirtyEpTitle(String t) {
+        String s = t == null ? "" : t.trim();
+        if (s.length() == 0) return true;
+        if (s.indexOf("缺集") >= 0 || s.indexOf("上游没有第") >= 0) return true;
+        return s.matches("第\\s*\\d+\\s*集");
+    }
+
+    /**
+     * ★ 1.3.334：短书名 —— 补《书名》前缀时不能用缓存里的**全名**。
+     * 「仙逆丨多人剧丨曲中人有故事丨动漫热播原著丨耳根丨完结」拼上集号后，
+     * 队列/播放页只见书名不见集数（用户实测反馈）。取常见副标题分隔符
+     * （丨 | · ／ / 等）前的第一段当短名；第一段不足 2 字（歧义大）或没有
+     * 分隔符就退回全名。
+     */
+    public static String shortBook(String b) {
+        if (b == null) return "";
+        String s = b.trim();
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("^(.{1,24}?)\\s*[丨|·・／/].+$").matcher(s);
+        if (m.matches()) {
+            String g = m.group(1).trim();
+            if (g.length() >= 2) return g;
+        }
+        return s;
+    }
+
     public static boolean mergeEpsPage(String albumId, JSONArray page) {
         if (albumId == null || page == null || page.length() == 0) return false;
         synchronized (LOCK) {
@@ -361,8 +393,21 @@ public final class Prog {
                         }
                         if (hit == null) { hit = new JSONObject(); hit.put("ep", ep); eps.put(hit); }
                         String rid = e.optString("rid", "");
-                        if (rid.length() > 0) hit.put("rid", rid);
                         String tt = e.optString("title", "");
+                        /* ★ 1.3.333：只在「带 ep=N 的按需单点拉取」里带 srvMiss 标记。
+                           Keeper 整本逐页预填（ep=0）不带，绝不因分页口径误清本地真 rid。
+                           服务端 v1.7.10 统一了「没有 rid 就是缺集」，这里照它的结论把
+                           v1.6.x 遗留的「假 rid + 旧占位文案」清成纯占位行 —— 不清的话
+                           play/resolve 会拿假 rid 直接播（语音报「网络好像出了点问题」），
+                           也永远不会触发 /api/ab/episodes?ep=N 的按需救援。 */
+                        if (e.optBoolean("srvMiss", false) && rid.length() == 0
+                                && isDirtyEpTitle(hit.optString("title", ""))) {
+                            hit.put("rid", "");
+                            hit.put("title", tt.length() > 0 ? tt : ("第" + ep + "集"));
+                            hit.put("filled", false);
+                            continue;
+                        }
+                        if (rid.length() > 0) hit.put("rid", rid);
                         if (tt.length() > 0) hit.put("title", tt);
                         String ar = e.optString("artist", "");
                         if (ar.length() > 0) hit.put("artist", ar);

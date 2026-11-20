@@ -602,6 +602,17 @@ chk() {   # chk <文件> <说明> <特征串>
 chkNo() {
   if grep -qF -- "$3" "$1"; then echo "  FAIL $2（不该出现：$3）"; FAIL=1; else echo "  OK   $2"; fi
 }
+# ★ pl-1.6.163：Ui.java 是**分块拼接**的 Java 字符串常量（每块 ≈22KB），页面每加几行块边界
+#   就往后挪一次，长特征串很容易正好被切在边界上（实测 "…nightFill(NIGHT, true);\nfuncti"
+#   + "on nightLock() { NIGHT.lock …"），此时 grep 找不到**不等于代码没了**。
+#   所以查 Ui.java 一律走这个口：先把 `",\s*"` 这种块拼接点合并回整页文本，再按整串匹配。
+chkUI() {   # chkUI <说明> <特征串>（特征串走 stdin，避开 MSYS 的路径改写）
+  if printf '%s' "$2" | "$PY" _uichk.py "plsrc/cn/workbuddy/r1web/Ui.java"; then
+    echo "  OK   $1"
+  else
+    echo "  FAIL $1（没找到：$2）"; FAIL=1
+  fi
+}
 FAIL=0
 
 echo "=========== [0/8] 生成 Ui.java（页面 -> Java 常量） ==========="
@@ -638,8 +649,29 @@ chk "$SRCS/DevCtl.java" '停用走 op=halt'    'op=halt'
 chk "$SRCS/DevCtl.java" '恢复 startservice' 'am startservice -n '
 chk "$SRCS/PCtl.java"   '跳播用 playIndex'  'playIndex(i, true)'
 chk "$SRCS/PCtl.java"   '队列来自钩子'       'noteQueue'
+chkUI     'pl-1.6.154 点播续播 10s'  'resumePos = Math.max(0, pe.lastPos - 10)'
+chk "ui/player.html"    'pl-1.6.154 ui 源 10s'     'resumePos = Math.max(0, pe.lastPos - 10)'
+chkUI     'pl-1.6.155 弹窗开拉最新'    'ebProgTs = Date.now()'
+chk "$SRCS/DevCtl.java" 'pl-1.6.156 结算通知实现'    'public static void srvPosFinal()'
+chk "$SRCS/PCtl.java"   'pl-1.6.156 暂停通知'       'DevCtl.srvPosFinal()'
+chk "$SRCS/WebSrv.java" 'pl-1.6.157 每连接一线程'   '"r1web-conn"'
+chk "$SRCS/DevCtl.java" 'pl-1.6.157 手动意图通知'   'public static void usrIntent(boolean paused)'
+chk "$SRCS/PCtl.java"   'pl-1.6.157 暂停/起播挂通知' 'DevCtl.usrIntent('
+chk "$SRCS/PCtl.java"   'pl-1.6.157 起播也挂通知'   'DevCtl.usrIntent(false)'
+chk "ui/player.html"    'pl-1.6.157 prog 60s 节流'  '_ebProgTs0'
+chk "ui/player.html"    'pl-1.6.158 续播文案 10s'  '续播往前推 10 秒'
+# ★ pl-1.6.160：真播 URL 打 live=1（预取不落播放记录）
+chk "$SRCS/PCtl.java"   'pl-1.6.160 markLive 实现'  'public static String markLive(String url)'
+chk "$SRCS/PCtl.java"   'pl-1.6.160 live 标记'      '"&live=1" : "?live=1"'
+# ★ pl-1.6.161：网页回写进度按当前真实集号纠正（修播放记录在两集之间跳）
+chk "ui/player.html"    'pl-1.6.161 集号纠正'       'p.ep = ce;'
+chk "ui/player.html"    'pl-1.6.161 换书停回写'     'ebCurPlay = null;'
+# ★ pl-1.6.159：来源标签直连服务端（同源反代 + 页面权威标签优先）
+chk "$SRCS/WebSrv.java" 'pl-1.6.159 来源反代'       'path.equals("/api/src")'
+chk "ui/player.html"    'pl-1.6.159 服务端标签直连' 'pl-1.6.159 服务端来源标签直连'
+chk "ui/player.html"    'pl-1.6.159 标签最高优先级' 'if (SRCLBL) { setTag(srcTagOf(SRCLBL)); }'
 chk "$SRCS/Boot.java"   '非主进程跳过'       'skip web: 非主进程'
-chk "$UI"               '页面已生成'         'class Ui'
+chkUI               '页面已生成'         'class Ui'
 chk "ui/player.html"    '页面有小智开关'      '停用小智'
 chk "ui/player.html"    '页面有队列'         'play_at'
 chk "ui/player.html"    '节目判据放宽(107)'   '无书名号的集数也算节目'
@@ -740,7 +772,7 @@ chk "$SRCS/Amb.java"     '多彩调速下限'      'MIN_MS_LO = 60'
 chk "$SRCS/Amb.java"     '多彩调速上限'      'MIN_MS_HI = 6000'
 chk "$SRCS/Amb.java"     '换色间隔范围收紧'  'sMinMs = (ms < MIN_MS_LO) ? MIN_MS_LO : (ms > MIN_MS_HI ? MIN_MS_HI : ms)'
 chk "$SRCS/WebSrv.java"  'status 带多彩速度' 'o.put("amb7ms", Amb.minMs())'
-chk "$SRCS/Ui.java"      '多彩速度滑块'      'function ambMsLive(v)'
+chkUI      '多彩速度滑块'      'function ambMsLive(v)'
 # ---- pl-1.6.57：换色慢、亮暗快 ----
 chk "$SRCS/Amb.java"     '亮度每帧跟音乐'    '★ sHue 不变（没到换色点），但 v 用的是**这一帧**的音量'
 chk "$SRCS/Amb.java"     '间隔只管换色'      'pl-1.6.57：这个间隔<b>只管换色</b>，不管亮度'
@@ -759,8 +791,8 @@ chk "$SRCS/Amb.java"     '钩子拦原厂'        '**直接拦掉**原厂这一�
 chk "$SRCS/Amb.java"     '不再关原厂'        '**不再** sendFactoryAmbient(false)'
 chk "$SRCS/Amb.java"     '补刀六刀'          'FIX_DELAYS = {60L, 150L, 300L, 500L, 800L, 1200L}'
 chk "$SRCS/WebSrv.java"  'ambon 路由'        'if (v.startsWith("ambon:")) {'
-chk "$SRCS/Ui.java"      '回显加锁'          'function nightLock() { NIGHT.lock = Date.now() + 2500; }'
-chk "$SRCS/Ui.java"      '锁期不覆盖'        'var lock = !force && Date.now() < NIGHT.lock;'
+chkUI      '回显加锁'          'function nightLock() { NIGHT.lock = Date.now() + 2500; }'
+chkUI      '锁期不覆盖'        'var lock = !force && Date.now() < NIGHT.lock;'
 # ---- pl-1.6.59：氛围灯加「单色」档 ----
 chk "$SRCS/Amb.java"     '单色档常量'        'public static final int MODE_SOLO = 2'
 chk "$SRCS/Amb.java"     'setMode'           'public static synchronized void setMode(int m)'
@@ -771,16 +803,16 @@ chk "$SRCS/Amb.java"     '档位记忆单调'      '**只能单调累加**'
 chk "$SRCS/Amb.java"     '恢复不抢原厂'      '**不再无条件**把原厂氛围灯拨到开'
 chk "$SRCS/WebSrv.java"  '单色路由'          'if ("solo".equals(v)) {'
 chk "$SRCS/WebSrv.java"  '档位回显'          'o.put("amb7mode", Amb.mode())'
-chk "$SRCS/Ui.java"      '单色取色行'        'rowSoloColor'
-chk "$SRCS/Ui.java"      '单色取色器'        'function ambSoloColor(v)'
+chkUI      '单色取色行'        'rowSoloColor'
+chkUI      '单色取色器'        'function ambSoloColor(v)'
 # ---- pl-1.6.60：关夜灯按原档位接回 ----
 chk "$SRCS/Amb.java"     '让路记档位'        'private static int sQuietMode = -1'
 chk "$SRCS/Amb.java"     '档位快照'          'int m = mode();'
 chk "$SRCS/Amb.java"     '按档位接回'        'restoreModeQuiet(sQuietMode)'
 chk "$SRCS/Amb.java"     '恢复不冲单色'      '按记忆的**档位**接回'
 # ---- pl-1.6.60：切档位按钮不乱跳 ----
-chk "$SRCS/Ui.java"      '档位加锁'          'function ambLock()'
-chk "$SRCS/Ui.java"      '档位锁期不覆盖'    'var lock = !force && Date.now() < AMB.lock;'
+chkUI      '档位加锁'          'function ambLock()'
+chkUI      '档位锁期不覆盖'    'var lock = !force && Date.now() < AMB.lock;'
 # ---- pl-1.6.61：夜灯期间停音乐律动 519（暂停/播放不闪）----
 chk "$SRCS/Amb.java"     '519 按停方法'       'private static void stopMusicLight()'
 chk "$SRCS/Amb.java"     '519 接回方法'       'private static void restoreMusicLight()'
@@ -853,8 +885,8 @@ chk "ui/player.html"    '列表行禁止选词(长按才准)'  'user-select:none
 chk "ui/player.html"    '整行任意位置可长按'        '任意位置'
 chk "ui/player.html"    '取消收藏先弹确认'          'function favDelAsk(i) {'
 chk "ui/player.html"    '确认后真删'                'function favDelOk() {'
-chk "$SRCS/Ui.java"    '页面内嵌重链接弹窗'      'function openRelink(o) {'
-chk "$SRCS/Ui.java"    '页面内嵌长按监听'        'function lpBind(box, kind) {'
+chkUI    '页面内嵌重链接弹窗'      'function openRelink(o) {'
+chkUI    '页面内嵌长按监听'        'function lpBind(box, kind) {'
 # ---- pl-1.6.75：自动没配上 = 重链接模式 + 点歌不重载队列 ----
 chk "ui/player.html"    '红标忽略集合'            'var RLHIDE = {};'
 chk "ui/player.html"    '自动没配上判定'          'function favAutoMiss(it) {'
@@ -887,20 +919,20 @@ chk "$SRCS/Boot.java"    "版本 $VERCHK"         "$VERCHK"
 
 # ---- pl-1.6.135：本地节目播放要带书名/集名 ----
 #      play_url 认 title/artist（PlayerBridge.playUrl），不带就落回「网络音频」。
-chk "$SRCS/Ui.java"      '本地节目带集名'      "title: title || ''"
+chkUI      '本地节目带集名'      "title: title || ''"
 # ★ pl-1.6.146：标题拼装统一走 ablEpLabel（带集号判重），别再直接拼 "第N集"+title
 chk "$SRCS/WebSrv.java"  '入列每集标题'        'ablEpLabel(ep, et)'
 
 # ---- pl-1.6.134：本地节目缓存（进页面先上缓存，NAS 扫盘时间变了才重绘）----
 #      为什么要：书库在 NAS，设备 WebSrv 是「异步线程 + 轮询」，每进一次页面/每点开一本书
 #      都得等 0.5~1s；缓存后同一本书第二次点开是 0 延迟。
-chk "$SRCS/Ui.java"      '书列表缓存键'        'ABL_BOOKS_KEY'
-chk "$SRCS/Ui.java"      '内容指纹比对'        'function ablSig('
-chk "$SRCS/Ui.java"      '集表缓存'            'ablEpsPut('
-chk "$SRCS/Ui.java"      '缓存回放'            'function ablApplyEps('
-chk "$SRCS/Ui.java"      '记忆同步缓存'        'function ablTouchCache('
-chk "$SRCS/Ui.java"      '重载曲库后校验'      'ablLoad(\"\", true)'
-chk "$SRCS/Ui.java"      '合集父级记忆字段'    'b.lastSub'
+chkUI      '书列表缓存键'        'ABL_BOOKS_KEY'
+chkUI      '内容指纹比对'        'function ablSig('
+chkUI      '集表缓存'            'ablEpsPut('
+chkUI      '缓存回放'            'function ablApplyEps('
+chkUI      '记忆同步缓存'        'function ablTouchCache('
+chkUI      '重载曲库后校验'      'ablLoad(\"\", true)'
+chkUI      '合集父级记忆字段'    'b.lastSub'
 chk "$SRCS/WebSrv.java"  '透传扫盘时间'        'sAblAt'
 
 # ---- pl-1.6.133：本地节目读书目录自带元数据（封面/作者/演播/年份/简介/每集时长）----
@@ -909,36 +941,36 @@ chk "$SRCS/WebSrv.java"  '透传扫盘时间'        'sAblAt'
 # ---- pl-1.6.138：本地节目不转 ab_next（修「第50集跳到在线书第1643集」）+ 队列铺到 300 集 ----
 #      根因：本地书按「下一曲」时仍转发 device 的 ab_next，device 的 ab 加载器只记着
 #      上一次在线听的书（凡人修仙传 1643），整批 22 集推下来顶掉本地队列。
-chk "$SRCS/Ui.java"      '本地节目不走ab转发'  'function ablIsLocalQueue('
-chk "$SRCS/Ui.java"      '本地节目自己切集'    'function ablSkip('
-chk "$SRCS/Ui.java"      '队首队尾续拉'        'function ablEdge('
-chk "$SRCS/Ui.java"      '在听哪集可反解'      'function ablCurInfo('
-chk "$SRCS/Ui.java"      '点播先铺满队列'      'ablFetchBatch(m.id, ep, 300'
-chk "$SRCS/Ui.java"      '本地队列铺到300集'    'out.length < 300'
+chkUI      '本地节目不走ab转发'  'function ablIsLocalQueue('
+chkUI      '本地节目自己切集'    'function ablSkip('
+chkUI      '队首队尾续拉'        'function ablEdge('
+chkUI      '在听哪集可反解'      'function ablCurInfo('
+chkUI      '点播先铺满队列'      'ablFetchBatch(m.id, ep, 300'
+chkUI      '本地队列铺到300集'    'out.length < 300'
 chkNo "$SRCS/Ui.java"    '别退回50集小队列'    'out.length < 50'
 chk "$SRCS/WebSrv.java"  '集表size可调'        'rq.optInt("size", 100)'
 
 # ---- pl-1.6.137：本地节目整批入列（下一曲不再串到别的书）+ 简介配色 ----
 #      点一集 = 本集 + 后面 49 集一次性塞进 player 队列（和在线节目的 ab 加载器同语义），
 #      player 侧反射造 PlaySong + play(info,true)，走 WebSrv 新端点 /api/ablplay。
-chk "$SRCS/Ui.java"      '本地节目组队列'      'function ablQueue('
-chk "$SRCS/Ui.java"      '点播走整批入列'      '/api/ablplay'
-chk "$SRCS/Ui.java"      '简介不用默认链接色'  'color:#9fb0c9'
+chkUI      '本地节目组队列'      'function ablQueue('
+chkUI      '点播走整批入列'      '/api/ablplay'
+chkUI      '简介不用默认链接色'  'color:#9fb0c9'
 chk "$SRCS/WebSrv.java"  'ablplay 端点'        'path.equals("/api/ablplay")'
 chk "$SRCS/WebSrv.java"  '入列演播拼书名'      'book + " · " + sub'
 chk "$SRCS/PCtl.java"    '整批起播'            'playList(List<PlaySong>'
 chk "$SRCS/PCtl.java"    '反射造 PlaySong'     'com.phicomm.speaker.player.model.PlaySong'
 
 # ---- pl-1.6.136：本地节目列表瘦身（一行一本）/ 固定不显示封面 / 简介可点开 / 改名在线节目 ----
-chk "$SRCS/Ui.java"      '本地书作者/演播行'    'function ablMetaLine('
-chk "$SRCS/Ui.java"      '每集显示时长'        'ablDur(e.dur)'
+chkUI      '本地书作者/演播行'    'function ablMetaLine('
+chkUI      '每集显示时长'        'ablDur(e.dur)'
 #   ★ pl-1.6.136：本地节目固定不显示封面（跨网拉 NAS 图拉不到，列表会先撑高再塌）。
 #     用 chkNo 反向盯住：谁再把封面拼回来就 FAIL。
 chkNo "$SRCS/Ui.java"    '本地节目别拉封面'      'ablCov'
 #   ★ 简介改用 onclick 切换：R1 是 Android 5.1 的 WebView，<details> 根本展不开。
-chk "$SRCS/Ui.java"      '简介点击展开'        'function ablToggleDesc('
-chk "$SRCS/Ui.java"      '本地列表一行格式'    "right.join(' · ')"
-chk "$SRCS/Ui.java"      '栏目改名在线节目'    '在线节目 <span class='
+chkUI      '简介点击展开'        'function ablToggleDesc('
+chkUI      '本地列表一行格式'    "right.join(' · ')"
+chkUI      '栏目改名在线节目'    '在线节目 <span class='
 chk "$SRCS/WebSrv.java"  '简介往下透传'        'h.put("desc", o.optString("desc", ""));'
 chk "$SRCS/WebSrv.java"  '封面往下透传'        'h.put("cover", o.optString("cover", ""));'
 
@@ -947,11 +979,11 @@ chk "$SRCS/WebSrv.java"  '封面往下透传'        'h.put("cover", o.optString
 chk "$SRCS/WebSrv.java"  '本地书库代理 books'  '/api/abl/books'
 chk "$SRCS/WebSrv.java"  '本地书库代理 eps'    '/api/abl/eps'
 chk "$SRCS/WebSrv.java"  '本地书库记忆 pos'    '/api/abl/pos'
-chk "$SRCS/Ui.java"      '本地节目两栏'        'ablSearchBtn'
-chk "$SRCS/Ui.java"      '合集子书弹窗'        'ablOpenSubs'
+chkUI      '本地节目两栏'        'ablSearchBtn'
+chkUI      '合集子书弹窗'        'ablOpenSubs'
 #   ★ 断言里别放 emoji：这条链路上 emoji 过 shell 参数 / grep -F 会被转码成别的字节，
 #     文件里明明有也匹配不上（实测 📖 在 Ui.java 里 8 处、grep 却 exit=1），改锚在旁边的代码上。
-chk "$SRCS/Ui.java"      '本地节目来源标签'    'ABL_CUR) { setTag('
+chkUI      '本地节目来源标签'    'ABL_CUR) { setTag('
 
 # ---- pl-1.6.131：标题里的集号「第003章」也要认（数字串兜底）+ 撤单窗口 10s→20s ----
 chk "$SRCS/WebSrv.java"    '集号数字串兜底'     'if (has && acc == ep)'
@@ -976,7 +1008,7 @@ chk "$SRCS/PCtl.java"       '引擎进程读标记兜底'   'abNoSkipOnErr[引�
 chk "patch_abnoskip.py"     '闸门标记'             'r1web: 有声书/节目失败不跳集'
 chk "patch_abnoskip.py"     '闸门调用 PCtl'        'PCtl;->abNoSkipOnErr()Z'
 chk "patch_abnoskip.py"     '闸门原地停'           ':abns_off'
-chk "$SRCS/Ui.java"      'saveQlim 0 也落盘'    'post(\"/api/set\", \"playlistMax=\" + n);'
+chkUI      'saveQlim 0 也落盘'    'post(\"/api/set\", \"playlistMax=\" + n);'
 # ---- pl-1.6.127：/r/prog、/r/fav 解析不到 ⇒ 空流（绝不回 404+"no source" 纯文本喂播放器）----
 chk "$SRCS/WebSrv.java"    'prog 无源空流'      '⇒ 空流，不给非音频'
 chk "$SRCS/WebSrv.java"    'fav 无源空流'       'fav_resolve 无源 k='
@@ -993,7 +1025,7 @@ chk "ui/player.html"       '忽略记次数'         'mn <= RLHIDE[mk]'
 chk "ui/player.html"       '长按只进模式'       'function rlEnterQ(i) {'
 chk "ui/player.html"       '✕ 才忽略'          'function rlIgnore(t, a, n, redraw) {'
 chkNo "ui/player.html"     '旧共用入口已移除'    'function rlToggleQ(i) {'
-chk "$SRCS/Ui.java"      '生效中 WS 显示真实值' 'sv.wsEffective || sv.wsOverride'
+chkUI      '生效中 WS 显示真实值' 'sv.wsEffective || sv.wsOverride'
 chk "ui/player.html"    'FAVRT 反向 map'       'FAVRT[favKey(it.rtitle, it.rartist || it.artist)] = it.title;'
 chk "ui/player.html"    '服务器 Token 输入框'  'id="inToken"'
 chk "ui/player.html"    'saveServer 带 token'   "setKV2({ otaUrl: v(\"inOta\"), wsUrl: v(\"inWs\"), serverToken: v(\"inToken\") });"
@@ -1396,7 +1428,7 @@ chkNo "$SRCS/Bt.java"     '不再用快照 bond 过滤' 'v.bond == BluetoothDevi
 # ---- pl-1.6.18：歌词框收成 5 排（150px），留白同步 58px 保证居中 ----
 chk "ui/player.html"     '歌词框 5 排高'       'max-height:150px'
 chk "ui/player.html"     '留白同步'            '#lrcLines{padding:58px 0}'
-chk "$SRCS/Ui.java"      '页面已随 HTML 重建'   'max-height:150px'
+chkUI      '页面已随 HTML 重建'   'max-height:150px'
 # ---- pl-1.6.17：封面时序（换歌立刻摘旧图 / 下载完才显示）+ 歌词框内滚动 ----
 chk "ui/player.html"     '封面钥匙'            'QPICKEY'
 chk "ui/player.html"     '换歌摘封面'          'im.removeAttribute("src")'
@@ -1415,7 +1447,7 @@ chk "ui/player.html"     '歌词面板'            'id="lrcBox"'
 chk "ui/player.html"     '折叠类 open'         '.lrcbox.open'
 chk "ui/player.html"     '当前行高亮'          'function lrcTick('
 chk "ui/player.html"     '取词走 /api/lrc'      'fetch("/api/lrc?t="'
-chk "$SRCS/Ui.java"      '页面已随 HTML 重建'   'lrcBox'
+chkUI      '页面已随 HTML 重建'   'lrcBox'
 # ---- pl-1.6.6：在线搜歌（8080 侧补齐） ----
 chk "$SRCS/WebSrv.java"  'search 透传 online'  '&online="'
 chk "$SRCS/WebSrv.java"  '在线类 op 长超时'    'fwdMs = 120000'
@@ -1739,6 +1771,8 @@ cp -f smali_$V/cn/workbuddy/r1web/*.smali smali_build_$V/cn/workbuddy/r1web/
 "$PY" patch_pause_idem.py smali_build_$V/com/phicomm/speaker/player/model/new_NetPlayer.smali || exit 1
 # pl-1.6.124：有声书/节目行播放失败 ⇒ 引擎不跳下一集（原地停）。两个引擎都要插。
 "$PY" patch_abnoskip.py smali_build_$V/com/phicomm/speaker/player/model/new_NetPlayer.smali smali_build_$V/com/phicomm/speaker/player/model/NetPlayer4.smali || exit 1
+# pl-1.6.160：真播 URL 打 live=1（setDataSource 方法头；预取 setPreparingDataSource 不碰）
+"$PY" patch_live.py smali_build_$V || exit 1
 # 临时诊断开关（R1DBG=1）：给 PlayerBinderWrapper$2 里所有静默 catch(Exception)
 # 插入 printStackTrace + Logger.d —— 用来抓 pause/start 返回 false 的真凶。
 "$PY" patch_amb.py smali_build_$V/com/phicomm/speaker/player/light/LedLight.smali || exit 1
@@ -1783,18 +1817,18 @@ chk "smali_build_$V/com/phicomm/speaker/player/model/NetPlayer4.smali" 'NetPlaye
 chk "$SRCS/PCtl.java" 'seek 客户端' 'TX_SEEK'
 chk "$SRCS/WebSrv.java" 'op=seek 路由' '"seek".equals(op)'
 # pl-1.6.13：拖动「把手跟手、条慢一拍又弹回去」—— paintPos 拖动期间强制画 PR_VAL
-chk "$SRCS/Ui.java"       '拖动期间独占绘图' 'if (PR_DRAG) pos = PR_VAL'
+chkUI       '拖动期间独占绘图' 'if (PR_DRAG) pos = PR_VAL'
 # pl-1.6.14：松手后「跳回原处再跳回落点」—— seek 生效窗口，窗口内不采纳旧真值
-chk "$SRCS/Ui.java"       'seek 生效窗口状态' 'function prWait()'
-chk "$SRCS/Ui.java"       '窗口内锁死落点' 'else if (prWait()) pos = PR_SEEK_MS'
-chk "$SRCS/Ui.java"       '窗口内不碰时钟' 'if (PR_SEEK_WAIT) {'
-chk "$SRCS/Ui.java"       '窗口内冻住插值' 'if (PR_DRAG || prWait()) { POS_NEXT = 0; return; }'
-chk "$SRCS/Ui.java"       '换曲作废窗口' 'PR_SEEK_WAIT = false; PR_SEEK_TILL = 0'
-chk "$SRCS/Ui.java"       '把手同步过渡' 'transition:left .5s linear'
+chkUI       'seek 生效窗口状态' 'function prWait()'
+chkUI       '窗口内锁死落点' 'else if (prWait()) pos = PR_SEEK_MS'
+chkUI       '窗口内不碰时钟' 'if (PR_SEEK_WAIT) {'
+chkUI       '窗口内冻住插值' 'if (PR_DRAG || prWait()) { POS_NEXT = 0; return; }'
+chkUI       '换曲作废窗口' 'PR_SEEK_WAIT = false; PR_SEEK_TILL = 0'
+chkUI       '把手同步过渡' 'transition:left .5s linear'
 # pl-1.6.15：卡片信息去重 —— 专辑=歌名不显示；来源文本只留 npTag 一颗 pill
 # （★ Ui.java 是 Java 字符串常量，引号已转义成 \"，chk 串也要用 \"）
-chk "$SRCS/Ui.java"       '专辑=歌名不显示' 'm.curAlbum !== \"Radio\" && m.curAlbum !== m.curTitle'
-chk "$SRCS/Ui.java"       'via 不再写第二遍' 'npMeta\").textContent = pm.join(\" · \");'
+chkUI       '专辑=歌名不显示' 'm.curAlbum !== \"Radio\" && m.curAlbum !== m.curTitle'
+chkUI       'via 不再写第二遍' 'npMeta\").textContent = pm.join(\" · \");'
 chk "$SRCS/Ext.java"     '外部源状态读真实引擎' 'Svc.playing'
 chk "smali_build_$V/com/phicomm/speaker/player/util/Common.smali"     'attach 钩子'  'Boot;->attach'
 chk "smali_build_$V/com/phicomm/speaker/player/model/EasyPlayer.smali" 'onPlay 钩子' 'Boot;->onPlay'
@@ -1811,6 +1845,8 @@ chk "smali_build_$V/com/phicomm/speaker/player/model/new_NetPlayer.smali" 'pause
 chk "smali_build_$V/com/google/android/exoplayer2/ExoPlayerLibraryInfo.smali" 'Exo 2.18.0' '2.18.0'
 chk "smali_build_$V/com/google/common/collect/ImmutableList.smali" 'guava 在' 'ImmutableList'
 chk "smali_build_$V/com/phicomm/speaker/player/model/MultiExoPlayer.smali" 'MultiExoPlayer 在' 'MultiExoPlayer'
+chk "smali_build_$V/com/phicomm/speaker/player/model/MultiExoPlayer.smali" 'pl-1.6.160 真播打标(Exo)' 'PCtl;->markLive(Ljava/lang/String;)Ljava/lang/String;'
+chk "smali_build_$V/com/phicomm/speaker/player/model/MultiMediaPlayer.smali" 'pl-1.6.160 真播打标(MP)' 'PCtl;->markLive(Ljava/lang/String;)Ljava/lang/String;'
 chkNo "smali_build_$V/com/phicomm/speaker/player/exomedia/AudioPlayer.smali" '旧 exomedia 已删' 'exomedia'
 if [ "$FAIL" != "0" ]; then echo "exo 自检未过，中止"; exit 1; fi
 echo "  合并后 smali：$(find smali_build_$V -name '*.smali' | wc -l)"
@@ -1850,7 +1886,7 @@ ls -l "$OUT"
 VER=$(sed -n 's/.*VER = "\([^"]*\)".*/\1/p' plsrc/cn/workbuddy/r1web/Boot.java | head -1)
 if [ -n "$VER" ] && [ -f xiaozhi_EchoService_pv81.apk ]; then
   APK="release/xiaozhi_EchoService_${VER}.apk"
-  REL="$VER"
+  REL="release/$VER"
   if [ -f "$APK" ]; then
     echo "== [留档] $APK 已存在，历史版本不覆盖（本次未归档）=="
   else

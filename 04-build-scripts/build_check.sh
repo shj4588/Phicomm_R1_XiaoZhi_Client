@@ -90,7 +90,7 @@ file_ok "$D/libr1opus.so"       "libr1opus.so"
 file_ok "$D/keep_v23.pro"       "keep_v23.pro（R8 规则）"
 file_ok "$D/Unisound.apk"       "Unisound.apk（原厂壳）"
 file_ok "$D/janus_poc.py"       "janus_poc.py"
-file_ok "$D/build_rel_V205.sh"  "build_rel_V205.sh"
+file_ok "$D/build_rel_V206.sh"  "build_rel_V206.sh"
 
 head2 "== player（播放器端注入包）=="
 P="$SRC/player"
@@ -104,13 +104,13 @@ file_ok "$P/EchoService_system.apk" "EchoService_system.apk（原厂壳）"
 file_ok "$P/janus_poc.py"           "janus_poc.py"
 file_ok "$P/patch_smali.py"         "patch_smali.py"
 file_ok "$P/_gen_assets.py"         "_gen_assets.py"
-file_ok "$P/build_rel_V205.sh"      "build_rel_V205.sh"
+file_ok "$P/build_rel_V206.sh"      "build_rel_V206.sh"
 
 head2 "== 结论 =="
 if [ "$BAD" -eq 0 ]; then
     echo "  全部就绪。构建："
-    echo "    cd device && bash build_rel_V205.sh    # -> XiaoZhi_Unisound_V2.0.5.apk"
-    echo "    cd player && bash build_rel_V205.sh    # -> XiaoZhi_EchoService_V2.0.5.apk"
+    echo "    cd device && bash build_rel_V206.sh    # -> XiaoZhi_Unisound_V2.0.6.apk"
+    echo "    cd player && bash build_rel_V206.sh    # -> XiaoZhi_EchoService_V2.0.6.apk"
     exit 0
 else
     echo "  有缺件，按上面的路径补齐（见 环境说明.md），或设 R1_TOOLS 指向工具链目录。"

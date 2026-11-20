@@ -152,6 +152,39 @@ public final class DevCtl {
     /* ---------------- 工具 ---------------- */
 
     /** 极简 HTTP GET，超时 ms。用于本机 loopback 探测。 */
+    /** ★ pl-1.6.156：主动暂停 / 停止 / 实体键暂停 ⇒ 让 device 立即结算上报服务端
+     *  （books 共享表）。fire-and-forget：短线程 + 2s 超时，绝不拖慢暂停动作本身；
+     *  8088 不在就静默（服务端还有 15s 周期兜底）。 */
+    public static void srvPosFinal() {
+        notifyDev("srv_pos_final");
+    }
+
+    /** ★ pl-1.6.157：通用 fire-and-forget loopback 通知（短线程 + 2s 超时）。
+     *  8088 不在（小智停用中）就静默 —— 通知类消息不该有任何副作用。 */
+    public static void notifyDev(final String op) {
+        new Thread(new Runnable() {
+            public void run() {
+                try {
+                    httpGet("http://127.0.0.1:8088/api/act?op=" + op, 2000);
+                } catch (Throwable ignored) { }
+            }
+        }, "dev-notify").start();
+    }
+
+    /**
+     * ★ pl-1.6.157：把「用户在网页/实体键上显式暂停或恢复」告诉 device 的
+     * MusicResume —— 它只靠这个决定「小智说完话要不要把音乐接回去」。
+     * 以前只有语音指令（device dispatch pause/stop）会置 userPaused 标记，
+     * r1web 按钮暂停 device 根本不知道 ⇒ 小智开口照常让路记账、说完话把
+     * 用户明明手动停掉的音乐又拽回来（用户实测反馈）。
+     *
+     * @param paused true = 用户显式暂停/停止（noteUserPause，本轮永不自动恢复）；
+     *               false = 用户显式起播/恢复（noteUserPlay，清掉暂停标记）
+     */
+    public static void usrIntent(boolean paused) {
+        notifyDev(paused ? "usr_pause" : "usr_play");
+    }
+
     public static String httpGet(String url, int timeoutMs) {
         Socket s = null;
         try {

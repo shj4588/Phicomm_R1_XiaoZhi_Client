@@ -29,7 +29,7 @@ import java.util.List;
  * 行为与丢失前逐条一致（后续改动：VER、restoreOnBoot 调用）。</p>
  */
 public final class Boot {
-    public static final String VER = "pl-1.6.148";
+    public static final String VER = "pl-1.6.163";    // ★ 播放页「转码」pill —— 服务端降档转码听得见也看得见
     public static final String TAG = "R1WEB";
 
     public static Context app;
@@ -79,6 +79,15 @@ public final class Boot {
                         Bt.init(app);
                     } catch (Throwable t) {
                         log("bt init 失败: " + t);
+                    }
+                    try {
+                        /* pl-1.6.150：蓝牙氛围灯兜底（原厂 lightId 255 = CYAN 淡青蓝）。
+                           原厂 EchoService.enterBusy 会发 255，但 14:47 实测出现过
+                           「A2DP 在放歌却没 enterBusy」⇒ 一次灯效都不发；
+                           这里只按 A2DP 实际连接态补 show/close，灯效仍由原厂跑。 */
+                        Bt.initBtLight();
+                    } catch (Throwable t) {
+                        log("bt light init 失败: " + t);
                     }
                     try {
                         // 手机 DLNA 推流的曲目广播（:DlnaPlayer 进程插桩发过来）

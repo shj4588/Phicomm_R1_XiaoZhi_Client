@@ -1,0 +1,29 @@
+# 构建产物 / 安装包：不进仓库（发布时作为 GitHub Release 附件）
+/apps/
+
+# 构建中间产物（各构建脚本每次重建）
+04-build-scripts/device/out_*/
+04-build-scripts/device/classes_*/
+04-build-scripts/device/smali_build_*/
+04-build-scripts/device/smali_pv*/
+04-build-scripts/device/bridge_*.dex
+04-build-scripts/player/out_*/
+04-build-scripts/player/classes_*/
+04-build-scripts/player/smali_build_*/
+04-build-scripts/player/smali_pv*/
+04-build-scripts/player/stubout/
+04-build-scripts/player/bridge_*.dex
+**/*.log
+**/_VERSION_dev.bak
+**/_VER_dev.bak
+
+# 工具链自己放（体积大、按平台不同）
+04-build-scripts/tools/jdk/
+04-build-scripts/tools/android.jar
+04-build-scripts/tools/r8.jar
+04-build-scripts/tools/smali/
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini

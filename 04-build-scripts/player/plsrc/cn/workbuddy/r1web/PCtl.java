@@ -294,6 +294,36 @@ public final class PCtl {
         }
     }
 
+    /* ---------------- 节目占位行真名（device v1.3.332 / pl-1.6.151） ----------------
+       /r/prog?aid=<albumId>&ep=<N> 是「播到才解析」的占位地址。302 跳到真地址并不会
+       改写原 PlaySong 的 title（入列时用的是集表里的「第 N 集」缺集占位名），
+       所以 WebSrv.progResolveRedirect 解析成功时按 aid|ep 记一份真名，
+       /api/status 用它覆盖 curTitle / curArtist / curUrl —— 播放页显示服务端真名。
+       纯内存：player 重启后播到会自动重建；key 不带书名，albumId 已唯一。 */
+    private static final Map<String, String[]> sProgReal
+            = new ConcurrentHashMap<String, String[]>();
+
+    /* 复用已有的 progPendingKey(url) ⇒ {aid, ep}；本表的 key = aid + "|" + ep。 */
+
+    /** 这一集解析成功过吗（⇒ {真名, 真歌手, 真地址}；没有 ⇒ null）。 */
+    public static String[] progReal(String k) {
+        return (k == null || k.length() == 0) ? null : sProgReal.get(k);
+    }
+
+    /** 节目占位解析成功：记真名 / 真地址，并动队列版本号（页面据此重画）。 */
+    public static synchronized void noteProgReal(String aid, String ep,
+            String title, String artist, String url) {
+        if (aid == null || ep == null || aid.length() == 0 || ep.length() == 0) {
+            return;
+        }
+        sProgReal.put(aid + "|" + ep, new String[]{
+                title == null ? "" : title,
+                artist == null ? "" : artist,
+                url == null ? "" : url});
+        queueTs = System.currentTimeMillis();
+        Boot.log("prog real: " + aid + " ep=" + ep + " -> " + (title == null ? "" : title));
+    }
+
     /** 这一集是不是「试过、确实没源」。 */
     public static boolean progFailed(String aid, String ep) {
         return aid != null && ep != null && aid.length() > 0 && ep.length() > 0
@@ -547,6 +577,7 @@ public final class PCtl {
         if (p == null) {
             return "ERR 播放器还没起来";
         }
+        DevCtl.usrIntent(false);      // ★ pl-1.6.157：用户显式起播 ⇒ device 清「手动暂停」标记
         alarmYield();                 // pl-1.6.89：先让 device 还原铃声音量，再出声
         noteResume();                 // pl-1.6.27：起播 ⇒ 主动暂停记账作废
         if (needsRecover(p)) {
@@ -571,6 +602,8 @@ public final class PCtl {
            phase()/playingUi() 见到它就立刻 idle，不等引擎表态（见 sUserPaused 注释）。 */
         sUserPaused = true;
         sUserPausedTs = System.currentTimeMillis();
+        DevCtl.srvPosFinal();          /* ★ pl-1.6.156：暂停 ⇒ device 立即结算上报服务端 */
+        DevCtl.usrIntent(true);        /* ★ pl-1.6.157：告诉 MusicResume「用户手动暂停」⇒ 小智说完话不自动恢复 */
         if (playerStatus(p) != 2) {
             return ok(true, "暂停");
         }
@@ -578,6 +611,8 @@ public final class PCtl {
     }
 
     public static String stop() {
+        DevCtl.srvPosFinal();          /* ★ pl-1.6.156：停止 ⇒ device 立即结算上报服务端 */
+        DevCtl.usrIntent(true);        /* ★ pl-1.6.157：显式停止同样不自动恢复 */
         boolean r = ep() != null && ep().stop();
         forgetRadio();                 // pl-1.6.25：停播 ⇒ 「电台」记账作废
         noteResume();                  // pl-1.6.27：主动暂停记账一并作废
@@ -589,6 +624,7 @@ public final class PCtl {
         if (p == null) {
             return "ERR 播放器还没起来";
         }
+        DevCtl.usrIntent(false);      // ★ pl-1.6.157：切歌也是显式意图 ⇒ 清手动暂停标记
         alarmYield();                  // pl-1.6.89：先让路（音量先设好，再出声）
         noteResume();                  // pl-1.6.27：下一曲 ⇒ 清暂停记账
         if (needsRecover(p)) {
@@ -602,6 +638,7 @@ public final class PCtl {
         if (p == null) {
             return "ERR 播放器还没起来";
         }
+        DevCtl.usrIntent(false);      // ★ pl-1.6.157：切歌也是显式意图 ⇒ 清手动暂停标记
         alarmYield();                  // pl-1.6.89：先让路
         noteResume();                  // pl-1.6.27：上一曲 ⇒ 清暂停记账
         if (needsRecover(p)) {
@@ -635,6 +672,7 @@ public final class PCtl {
         if (p == null) {
             return "ERR 播放器还没起来";
         }
+        DevCtl.usrIntent(false);      // ★ pl-1.6.157：点队列行起播 ⇒ 清 device 手动暂停标记
         alarmYield();                  // pl-1.6.89：先让路
         noteResume();                  // pl-1.6.27：指定曲目 ⇒ 清暂停记账
         synchronized (PCtl.class) {
@@ -670,6 +708,23 @@ public final class PCtl {
      * itemId/title/url/artist/album/albumUrl/itemType。</p>
      */
     public static PlaySong newSong(String itemId, String title, String url, String artist) {
+        return newSong(itemId, title, url, artist, "");
+    }
+
+    /**
+     * ★ pl-1.6.162：带 book 的版本 —— 队列项必须自带「这本书叫什么」。
+     *
+     * <p>事故背景（实测）：R1 播本地节目《道诡异仙》，播放记录被写成《遮天》。
+     * 原因是队列项里只有 artist（"道诡异仙"）和标题「第2集 师父」，**没有书名**；
+     * device 侧只能拿 URL 去它自己的在线曲库表反查，本地节目是 player 入的列、
+     * 表里查不到 ⇒ 书名空 ⇒ 退回全局 SP 里的上一本在线书（遮天）⇒ 记录张冠李戴。</p>
+     *
+     * <p>改法：谁入队谁盖章。书名写进 PlaySong 的 album 字段（原厂类没有 book 字段，
+     * 而 album 在本工程里一直就是「书名」位：player.html 的 qShow 用 {@code it.album || it.book}
+     * 补书名，device 推在线书时 tracks[4]=book 也落在同一处）。消费方只读不算。</p>
+     */
+    public static PlaySong newSong(String itemId, String title, String url, String artist,
+            String book) {
         try {
             Class<?> c = Class.forName("com.phicomm.speaker.player.model.PlaySong");
             Object o = c.getDeclaredConstructor(Parcel.class).newInstance(Parcel.obtain());
@@ -677,7 +732,7 @@ public final class PCtl {
             setStr(o, "title", title);
             setStr(o, "url", url);
             setStr(o, "artist", artist);
-            setStr(o, "album", "");
+            setStr(o, "album", book == null ? "" : book);
             setStr(o, "albumUrl", "");
             return (PlaySong) o;
         } catch (Throwable t) {
@@ -859,6 +914,8 @@ public final class PCtl {
     public static synchronized void markPaused() {
         sUserPaused = true;
         sUserPausedTs = System.currentTimeMillis();
+        DevCtl.srvPosFinal();          /* ★ pl-1.6.156：实体键暂停 ⇒ 同样结算上报 */
+        DevCtl.usrIntent(true);        /* ★ pl-1.6.157：实体键暂停 ⇒ 小智说完话也不自动恢复 */
     }
 
     /** 实体键恢复：与 {@link #noteResume()} 等同（清 sUserPaused），但不下发引擎。 */
@@ -1520,6 +1577,12 @@ public final class PCtl {
                 /* ★ pl-1.6.42：带上地址 —— 队列行点 ☆ 收藏时要用它当「能直接播」的凭据
                    （不然收藏条目只剩歌名，在线歌回库反查常常查不回来）。 */
                 it.put("url", s == null ? "" : nz(s.getUrl()));
+                /* ★ pl-1.6.152：队列里「只有集号」的缺集行要补书名。device 推歌时
+                   tracks[4]=book 落在原厂 PlaySong 的 album 字段（见 abQueueProgLazy）；
+                   老包 / 反射拿不到就留空 —— device 1.3.333 已在 title 里直接带书名兜底。 */
+                String qalb = "";
+                try { qalb = s == null ? "" : nz(s.getAlbum()); } catch (Throwable ignore) {}
+                it.put("album", qalb);
                 /* ★ pl-1.6.67：占位地址（/r/fav?k=）且还没解析成功 ⇒ miss。
                    页面把这一行标红，点它不再硬播（多半 404 跳走），而是切到音乐页
                    在线搜一遍让你自己挑。解析成功后 miss 自动撤（见 noteFavResolved）。 */
@@ -1618,6 +1681,18 @@ public final class PCtl {
 
     private static String nz(String s) {
         return s == null ? "" : s;
+    }
+
+    /* ★ pl-1.6.160：真播 URL 打「live=1」标记，供 mediaserver 只认真播、过滤预取。
+       引擎的 setDataSource（真播，会 play()）方法头经 smali 插桩调本方法；
+       setPreparingDataSource（预取/缓冲下一首）不调 ⇒ 它的 GET 不带 live ⇒ 不落记录。
+       纯字符串处理、无 binder、无状态，引擎进程（NetPlayerService）里可直接调用。
+       幂等：已有 live= 就不再追加。只给 http(s) 拉流 URL 加，本地/占位地址原样返回。 */
+    public static String markLive(String url) {
+        if (url == null || url.length() == 0) return url;
+        if (!(url.startsWith("http://") || url.startsWith("https://"))) return url;
+        if (url.indexOf("live=") >= 0) return url;           // 幂等
+        return url + (url.indexOf('?') >= 0 ? "&live=1" : "?live=1");
     }
 
     private PCtl() {

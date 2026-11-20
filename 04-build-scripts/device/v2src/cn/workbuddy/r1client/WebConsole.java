@@ -1148,6 +1148,7 @@ public final class WebConsole {
             // 最干净的办法是我们自己了断：同 uid 杀自己不需要任何权限。
             // 自杀前先把 HTTP 响应写完（延迟 500ms 再 kill）。
             if ("halt".equals(op)) {
+                ProgProgress.srvFinal("halt");   // ★ v1.3.340：关机前结算上报
                 SessionLog.i("halt: 收到停用指令（来自 player 控制台），即将结束进程");
                 new Thread(new Runnable() {
                     public void run() {
@@ -1630,6 +1631,24 @@ public final class WebConsole {
                 }
                 return PlayerBridge.dispatch("ab_resume", ab);
             }
+            /* ★ v1.3.358：进度 / 跳转（与语音 MCP self.r1player.seek_play 同一入口）：
+                 /api/act?op=seek_play&sec=720      跳到第 12 分钟
+                 /api/act?op=seek_play&delta=-60    后退 1 分钟
+                 /api/act?op=progress               只查「已播到 / 共 / 还剩」 */
+            if ("seek_play".equals(op) || "progress".equals(op)) {
+                JSONObject sa = new JSONObject();
+                try {
+                    String[] ks = {"sec", "to", "delta", "by"};
+                    for (String k : ks) {
+                        if (q.get(k) != null) {
+                            sa.put(k, q.get(k));
+                        }
+                    }
+                } catch (Throwable ignore) {
+                    // ignore
+                }
+                return PlayerBridge.dispatch("progress".equals(op) ? "progress" : "seek_play", sa);
+            }
             /* v1.3.286：我的节目（电子书收藏）。prog_list 返回 {ok,list}，其余走统一信封。 */
             /* ★ v1.3.297：我的节目仿「我的收藏」—— 整批占位入列（/r/prog）+ 播到才解析。
                prog_play：Prog 缓存命中 ⇒ ProgPlay.play 秒播；骨架/无缓存 ⇒ 回退 ab_play 现搜。
@@ -1652,6 +1671,25 @@ public final class WebConsole {
                     return r;
                 }
                 return PlayerBridge.dispatch("ab_play", a);   // 缓存不可用 ⇒ 现搜兜底
+            }
+            /* ★ v1.3.340：player 网页暂停/停止/实体键 ⇒ 通知 device 立即结算上报
+               服务端 books 共享表（与语音 pause/stop 走同一个 srvFinal）。 */
+            if ("srv_pos_final".equals(op)) {
+                ProgProgress.srvFinal("web");
+                return jsonEnv(true, "OK 已结算上报");
+            }
+            /* ★ v1.3.341：player 网页/实体键的**显式**暂停与起播 ⇒ 转告 MusicResume。
+               它的 userPaused 标记（显式暂停 ⇒ 本轮永不自动恢复）以前只有语音指令
+               （dispatch pause/stop）会置位 —— r1web 按钮暂停 device 根本不知道，
+               小智开口照常让路记账、说完话把用户手动停掉的音乐又拽回来（用户实测）。
+               usr_play 清标记：手动暂停后手动恢复，下一轮让路照常。 */
+            if ("usr_pause".equals(op)) {
+                MusicResume.noteUserPause();
+                return jsonEnv(true, "OK 手动暂停已记（本轮不自动恢复）");
+            }
+            if ("usr_play".equals(op)) {
+                MusicResume.noteUserPlay();
+                return jsonEnv(true, "OK 手动起播已记（清暂停标记）");
             }
             if ("prog_resolve".equals(op)) {
                 return ProgPlay.resolve(q.get("aid"), q.get("ep"));
@@ -1678,6 +1716,9 @@ public final class WebConsole {
                    收藏按钮静默无反应（"搜到的有声书无法收藏"）。改为直接走 Prog/ProgPlay 主本。 */
                 if ("prog_list".equals(op)) {
                     JSONArray lst = Prog.list();
+                    /* ★ v1.3.339：输出前并入服务端书级共享进度 —— r1web 与设备端
+                       「我的节目/最近播放」显示、点击续播都以服务端为准。 */
+                    lst = PlayerBridge.srvSyncProg(lst);
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     o.put("list", lst == null ? new JSONArray() : lst);
@@ -1700,6 +1741,23 @@ public final class WebConsole {
                 if ("prog_setpos".equals(op)) {
                     boolean ok = Prog.setProgress(pa.optString("albumId", "").trim(),
                             pa.optInt("ep", 0), pa.optInt("pos", 0));
+                    /* ★ v1.3.342 P1 收尾：位置同步上报媒体服务器 /v1/pos —— 直链播放
+                       （/r/）的「起播事实」记录由此补上真实位置；书级共享表更新后
+                       stem 等其它设备「继续听」能吃到 R1 的进度（此前 R1 只读不写，
+                       双向续播断一半）。r1web 每 8s 回写一次，上报放后台线程，
+                       绝不拖慢本请求。失败静默（progPosReport 内打日志）。 */
+                    if (ok) {
+                        final String fa = pa.optString("albumId", "").trim();
+                        final int fep = pa.optInt("ep", 0);
+                        final int fpos = pa.optInt("pos", 0);
+                        Thread t = new Thread(new Runnable() {
+                            public void run() {
+                                PlayerBridge.progPosReport(fa, fep, fpos);
+                            }
+                        }, "prog-pos-rpt");
+                        t.setDaemon(true);
+                        t.start();
+                    }
                     return jsonEnv(ok, ok ? "进度已记录" : "进度记录失败");
                 }
                 if ("prog_addcur".equals(op)) {

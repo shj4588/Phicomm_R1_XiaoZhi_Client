@@ -114,6 +114,10 @@ body::after{width:300px;height:300px;bottom:-110px;right:-80px;background:rgba(1
 .np .tag{margin-top:7px;display:inline-block;min-width:74px;text-align:center;
   font-size:11px;padding:2px 9px;border-radius:99px;
   background:rgba(129,140,248,.16);color:#a5b4fc;border:1px solid rgba(129,140,248,.28)}
+/* ★ pl-1.6.163：转码 pill —— 和类型 pill 同形同字号，只把色相换成青（跟紫色那颗区分），
+   紧跟其后；同样用 visibility 占位，出现/消失不会把下面内容顶来顶去。 */
+.np .tag.tc{margin-left:6px;min-width:0;padding:2px 8px;
+  background:rgba(34,211,238,.16);color:#67e8f9;border-color:rgba(34,211,238,.32)}
 /* ★ pl-1.6.42：收藏星标 —— 播放页标题右边一颗，列表行尾一颗。
    未收藏=空心☆（灰），已收藏=实心★（琥珀+微光），一眼分得出。 */
 .np .tline{display:flex;align-items:flex-start;gap:8px}
@@ -429,6 +433,8 @@ body.embed .wrap{max-width:none;padding:0 8px 8px}
           <!-- pl-1.6.29：码率 / 格式（含电台）——三路退化：Exo Format → URL 里的 /64k.mp3 → HEAD 探测 -->
           <div class="a2 q" id="npQual"></div>
           <span class="tag" id="npTag" style="visibility:hidden">本地音乐</span>
+          <!-- pl-1.6.163：这条流是不是服务端在转码（同风格第二颗，颜色用青） -->
+          <span class="tag tc" id="npTc" style="visibility:hidden">转码</span>
         </div>
       </div>
       <div class="prog">
@@ -1091,6 +1097,22 @@ var QVIA = "";           // 当前这首的来源（""=本地 / "online"=在线�
    以前换曲瞬间沿用上一首的 QVIA ⇒ 切到电台时先亮「在线搜到的」再改成「电台」，
    看着就是标签先错后改。现在：换了就先消失，服务端认出来（viaPend=false）再显示。 */
 var QPEND = false;
+/* ★ pl-1.6.159 服务端来源标签直连：服务端 v1.7.31 在起播时已判好五类来源，
+   页面不再靠 current URL / 电台名册猜（外部电台 URL 一变就被 viaOf 认成在线音乐）。
+   /api/src 是 player 自己反代的同源口，按「曲目地址|标题」缓存，每首只查一次；
+   拿不到（老服务端 / 网络不通）就退回原来的 QRADIO/QVIA/PTYPE 判定，不影响功能。 */
+var SRCLBL = "";      // 当前曲目服务端给的中文来源标签（空 = 还没有结论）
+var SRCCACHE = {};    // key -> 标签（含空串，避免查不到的曲目反复打接口）
+var SRCPEND = "";     // 正在查的 key，防同一拍重复请求
+/* ★ pl-1.6.163：服务端降档转码标记（紧跟类型 pill 的第二颗）
+   MediaServer v1.7.49 起，24bit/96k 那类 R1 解不动的文件由服务端实时转 MP3 128k，
+   页面这边只能看 URL 猜（设备报的 fmt 是 URL 后缀，转码后照样写 FLAC）。
+   所以曲目地址落在 /m/ 且后缀在「必转」集合里时，才去问一次服务端的判定接口
+   （/api/trans/probe，跨源，服务端只对 trans 这几个口放 CORS）；
+   判定 need=true 才亮「转码」。查不到/失败一律不亮 —— 宁可不标，不能标错。 */
+var TCCACHE = {};     // rel -> true/false（每首只问一次）
+var TCPEND = "";      // 正在问的 rel，防同一拍重复请求
+var TC_LOSS = /\.(flac|wav|ape|alac|aiff|aif|dsf|dff|wv|tta|tak)$/i;
 /* ★ pl-1.6.16：封面 / 歌词
    QPIC   = status 的 curPic（device 从落雪经 NAS 拿的封面 URL，空=回落成转碟）
    LRC    = {title,artist,lines:[{time,text}]}；LRCKEY = "歌名|歌手"（换曲判重用）
@@ -4412,7 +4434,11 @@ function load() {
                : fetch("/api/status").then(function (r) { return r.json(); });
   return p.then(function (s) {
     S = s || {};
-    ebLoadProg();
+    /* ★ pl-1.6.157：load() 里的「我的节目」拉取加 60s 节流。
+       /api/prog 反代 device prog_list，device 还要同步拉服务端 /v1/history ——
+       以前每 8s 轮询打一次，服务端一慢就把（现已多线程的）连接占住一条还拖慢
+       device；显示用途没必要这么勤，收藏/弹窗操作各自有即时刷新。 */
+    if (Date.now() - (window._ebProgTs0 || 0) > 60000) { window._ebProgTs0 = Date.now(); ebLoadProg(); }
     checkVer(s);
     var a = S.audio || {};
     var m = S.music || {};
@@ -4660,6 +4686,8 @@ function load() {
       else $("npPos").textContent = m.playing ? fmt(el) : "—";
       $("npBar").style.width = "0%";
     }
+    /* ★ pl-1.6.159：status 里地址/标题都到齐了，这时才问服务端来源（每首一次） */
+    if (!extOn) { fetchSrcLabel(CURURL, (MI && MI.title) || ""); }
   }).catch(function () { toast("状态拉取失败"); });
 }
 
@@ -4763,6 +4791,8 @@ function onWs(raw) {
     PSTATE = !!d.play_state;
     /* WS 那一路没有 phase 概念：有进度/时长即算真在播，没有则是起播缓冲 */
     PH = PSTATE ? (((MI && (MI.duration > 0 || MI.position > 0)) || STALL) ? "playing" : "loading") : "idle";
+    /* pl-1.6.159：WS 先听到换曲时立刻问服务端，不必等下一拍 status */
+    if (CURURL) { fetchSrcLabel(CURURL, (MI && MI.title) || ""); }
     renderNp();
     if (d.vol != null) {
       applyVol(d.vol, d.max_vol || 0, "音箱实时");
@@ -4845,6 +4875,84 @@ function setTag(txt) {
   tag.textContent = txt;
   tag.style.visibility = "visible";
 }
+/* ★ pl-1.6.163：转码 pill 的显隐（同 setTag 用 visibility 占位） */
+function setTcTag(on) {
+  var e = $("npTc");
+  if (!e) { return; }
+  e.style.visibility = on ? "visible" : "hidden";
+}
+/* 从曲目地址里取 MediaServer 上的相对路径：http://ip:8100/m/music/a.flac?x → music/a.flac */
+function tcRelOf(u) {
+  u = String(u || "");
+  var i = u.indexOf("/m/");
+  if (i < 0) { return ""; }
+  var r = u.slice(i + 3).split("?")[0].split("#")[0];
+  try { r = decodeURIComponent(r); } catch (e) { /* 保持原样 */ }
+  return r;
+}
+/* tcRelOf 的反向用途：拿 MediaServer 的 origin（转码判定接口在那边） */
+function tcBaseOf(u) {
+  var m = String(u || "").match(/^https?:\/\/[^\/]+/);
+  return m ? m[0] : "";
+}
+/* 问服务端：这个文件会不会被转码。跨源，只 GET 一次/首，结果永久缓存。
+   失败了**不写缓存**（下次切回来还能再问），并且保持不亮 —— 标错比不标糟。 */
+function fetchTcTag(rel, base) {
+  if (!rel || !base || TCPEND === rel) { return; }
+  TCPEND = rel;
+  fetch(base + "/api/trans/probe?rel=" + encodeURIComponent(rel), { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var need = !!(d && d.ok && d.judge && d.judge.need);
+      TCCACHE[rel] = need;
+      if (Object.keys(TCCACHE).length > 200) { TCCACHE = {}; TCCACHE[rel] = need; }
+      if (TCPEND === rel) { TCPEND = ""; }
+      if (tcRelOf(CURURL) === rel) { setTcTag(need); }
+    })
+    .catch(function () { if (TCPEND === rel) { TCPEND = ""; } });
+}
+/* 每拍（renderNp）调用：只用本地判断 + 已缓存结论，网络请求最多每首一次 */
+function syncTcTag() {
+  var rel = tcRelOf(CURURL);
+  if (!rel || !TC_LOSS.test(rel)) { setTcTag(false); return; }
+  var st = TCCACHE[rel];
+  if (st === undefined) { fetchTcTag(rel, tcBaseOf(CURURL)); setTcTag(false); return; }
+  setTcTag(!!st);
+}
+/* ★ pl-1.6.159：问服务端「当前这首是什么来源」。只用当前曲地址，不回源、不猜。
+   标题只作为 rid 命中不到时的兜底关键词；服务端用权威电台表精确比对。 */function srcKeyOf(u, t) {
+  /* 电台的 ICY 曲名会一直变，不能进缓存键 —— 有地址就只按地址缓存，
+     只有没地址（老设备兜底）才用标题查，避免一首电台每几秒打一次接口。 */
+  return String(u || "") || ("title:" + String(t || ""));
+}
+function srcTagOf(label) {
+  /* 与 R1 原五分类显示一致：节目两档沿用 📖 前缀，其余保持服务端原标签 */
+  return (label === "在线节目" || label === "本地节目") ? ("📖 " + label) : label;
+}
+function fetchSrcLabel(u, t) {
+  if (!u && !t) { return; }
+  var k = srcKeyOf(u, t);
+  if (Object.prototype.hasOwnProperty.call(SRCCACHE, k)) {
+    if (srcKeyOf(CURURL, (MI && MI.title) || "") === k) { SRCLBL = SRCCACHE[k]; }
+    return;
+  }
+  if (SRCPEND === k) { return; }
+  SRCPEND = k;
+  var done = function (label) {
+    SRCCACHE[k] = label;
+    if (Object.keys(SRCCACHE).length > 120) { SRCCACHE = {}; }
+    if (srcKeyOf(CURURL, (MI && MI.title) || "") === k && SRCLBL !== label) {
+      SRCLBL = label;
+      renderNp();   // 异步回来立刻贴标签，不等下一拍 status
+    }
+    if (SRCPEND === k) { SRCPEND = ""; }
+  };
+  fetch("/api/src?url=" + encodeURIComponent(u || "")
+        + "&title=" + encodeURIComponent(t || ""), { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (d) { done(d && d.ok ? (d.srcLabel || "") : ""); })
+    .catch(function () { done(""); });
+}
 /* ★ pl-1.6.101：当前这首是不是「节目」（有声书/评书/相声/广播剧）——
    来源标签五分类（本地节目/本地音乐/在线节目/在线音乐/广播电台）要用。
    ① 收藏里有 kind=program 的同名条目（原名/真名都试）⇒ 最准；
@@ -4890,6 +4998,8 @@ function renderNp() {
        服务端有 1.2s 观察期，但轮询是 3s 一拍 —— 这一拍里若不自己清，
        就会拿上一首的 QVIA 继续亮着（切电台时那颗「在线搜到的」就是这么残留的）。 */
     QVIA = ""; QRADIO = false; QPEND = true;
+    /* pl-1.6.159：换曲 ⇒ 上一首的服务端标签立刻作废，等新曲查回来再贴 */
+    SRCLBL = "";
     /* pl-1.6.16：换曲 ⇒ 旧歌词作废；面板开着就立刻去取新这首的 */
     LRC = null; LRCKEY = ""; LRCIDX = -1;
     if (LRCOPEN) fetchLrc(true);
@@ -4906,7 +5016,10 @@ function renderNp() {
      一旦服务端明确说是在线来源（QVIA 非空），说明用户已经换歌了，让位给在线判定。 */
   if (ABL_CUR && (QVIA === "online" || QVIA === "rand" || QVIA === "program"
                   || QVIA === "abl")) ABL_CUR = null;
-  if (QPEND) { setTag(""); }
+  /* ★ pl-1.6.159：服务端权威标签最高优先级（电台/在线/本地都按起播判定）；
+     没拿到才回到原来的 QRADIO → ABL_CUR → QVIA → PTYPE 兜底链。 */
+  if (SRCLBL) { setTag(srcTagOf(SRCLBL)); }
+  else if (QPEND) { setTag(""); }
   else if (QRADIO) { setTag("广播电台"); }
   /* ★ pl-1.6.141：语音点播本地书（via=abl）也要贴「本地节目」——
      以前只认网页自己记的 ABL_CUR，语音入列的本地书被 PTYPE=1 兜成「本地音乐」。 */
@@ -4922,6 +5035,8 @@ function renderNp() {
   else if (PTYPE === 1) { setTag(npIsProgram() ? "📖 本地节目" : "本地音乐"); }
   else if (PTYPE && names[PTYPE]) { setTag(names[PTYPE]); }
   else { setTag(""); }
+  /* ★ pl-1.6.163：类型 pill 定完再跟「转码」那颗 —— 两者并排，各自独立显隐 */
+  syncTcTag();
 
   /* ★ pl-1.6.9（二）：三态渲染 ——
        playing：唱片匀速转、按钮给「暂停」、副标题「播放中」、走真实进度；
@@ -5010,6 +5125,22 @@ function qName(it, i) {
   }
   return it.title || it.name || ("曲目 " + (i + 1));
 }
+/* ★ pl-1.6.152：播放队列里「未匹配上的集 / 缺集占位行」只有集号，补上书名。
+   只改**显示文本**，不动 qName 返回值 —— 后者还用于 FAVRT 反查和 rlKey 重链接键，
+   改了会串掉收藏自定义名 / 红标忽略记录。device 1.3.333 推歌时已在 title 里带
+   《书名》兜底，这里是给历史队列 / 8080 列表再兜一层。
+   ★ pl-1.6.153：书名先洗成短名 —— album 是缓存全名（仙逆丨多人剧丨…丨完结），
+   不洗的话列表里只见书名不见集数（用户实测反馈）。 */
+function qShow(it, i, nm) {
+  var bk = it && (it.album || it.book || '');
+  if (!bk || !nm || nm.indexOf('《') >= 0) return nm;
+  var mb = bk.match(/^(.{1,24}?)\s*[丨|·・／\/].+$/);
+  if (mb && mb[1].trim().length >= 2) bk = mb[1].trim();
+  if (/^第\s*\d+\s*集$/.test(nm) || /缺集|上游没有第/.test(nm)) {
+    return '《' + bk + '》' + nm;
+  }
+  return nm;
+}
 function qListSig(use) {
   /* ★ pl-1.6.67：签名里带上「没配套上的行数」—— 收藏占位地址播到后解析成功，
      player 会把那一行的 miss 撤掉并动队列版本号，只有行数也进签名，
@@ -5022,8 +5153,8 @@ function qListSig(use) {
     msum += (use[i] && use[i].missN) || 0;
   }
   return (wsOK ? "W" : "Q") + use.length + "|" + (Q.total || 0) + "|"
-    + (use.length ? qName(use[0], 0) : "") + "|"
-    + (use.length ? qName(use[use.length - 1], use.length - 1) : "") + "|m" + miss
+    + (use.length ? qShow(use[0], 0, qName(use[0], 0)) : "") + "|"
+    + (use.length ? qShow(use[use.length - 1], use.length - 1, qName(use[use.length - 1], use.length - 1)) : "") + "|m" + miss
     + "n" + msum;
 }
 function renderQueue(force) {
@@ -5087,7 +5218,7 @@ function renderQueue(force) {
     if (rlMarked(nm, ar) || miss) {
       return '<div class="li miss' + (i === cur ? " cur" : "") + '" onclick="rlOpenQ(' + i + ')">'
         + '<div class="n">' + (it.n || (i + 1)) + "</div>"
-        + '<div class="tx"><div class="a">' + esc(nm) + "</div>"
+        + '<div class="tx"><div class="a">' + esc(qShow(it, i, nm)) + "</div>"
         + '<div class="b">' + (sub ? sub + " · " : "")
         + (rlMarked(nm, ar) ? "重链接模式：点这一行去在线挑一版，✕ 退出"
           : "自动没配上：点这一行去在线挑一版，✕ 忽略")
@@ -5098,7 +5229,7 @@ function renderQueue(force) {
     }
     return '<div class="li' + (i === cur ? " cur" : "") + '" onclick="playAt(' + i + "," + real + ')">'
       + '<div class="n">' + (it.n || (i + 1)) + "</div>"
-      + '<div class="tx"><div class="a">' + esc(nm) + "</div>"
+      + '<div class="tx"><div class="a">' + esc(qShow(it, i, nm)) + "</div>"
       + (sub ? '<div class="b">' + sub + "</div>" : "") + "</div>"
       /* pl-1.6.42：队列里看到的歌也能收 —— 队列条目带 url，收下来就能直接播 */
       + starHtml(nm, ar, "favToggleQ(" + i + ")")
@@ -5372,6 +5503,7 @@ function wsDemo() {
 var EB_EPS_MAX = 200;                 // 单本最多展开集数，防止无限延长
 var ebEpsData = {};                   // 兼容占位（弹窗用 ebMod 代替）
 var ebProgMap = {};                   // albumId -> {lastEp, lastEpTitle, lastPos}
+var ebProgTs = 0;   /* ★ pl-1.6.155：最近一次进度拉取时间 —— 弹窗打开时据此决定要不要现拉服务端 */
 var ebCurPlay = null;                 // {aid, ep} 当前网页发起正在听的（回写进度用）
 var ebMod = null;                     // 弹窗状态
 
@@ -5490,7 +5622,19 @@ function ebOpenModal(aid, name, nar, cnt, fromProg) {
   var pe = ebProgMap[aid] || {};
   ebMod = { aid:aid, name:name, nar:nar, total:cnt, eps:[], lastEp:pe.lastEp||0,
             lastEpTitle:pe.lastEpTitle||'', lastPos:pe.lastPos||0, nextPage:1, hasMore:false, lastJump:0, q:'',
-            local:false, cache:null };
+            local:false, cache:null, rev:0, source:'kw', revApplied:false };
+  /* ★ pl-1.6.155：打开弹窗那一刻拉最新进度（device 会现并入服务端书级共享）——
+     别的设备 / 语音听过，点开看到的「最近播放」就是新的；15s 内重开不重复打。 */
+  if (Date.now() - (ebProgTs || 0) > 15000) {
+    ebLoadProg(function () {
+      if (!ebMod || ebMod.aid !== aid) { return; }
+      var pe2 = ebProgMap[aid] || {};
+      ebMod.lastEp = pe2.lastEp || 0;
+      ebMod.lastEpTitle = pe2.lastEpTitle || '';
+      ebMod.lastPos = pe2.lastPos || 0;
+      ebModRender();
+    });
+  }   /* ★ pl-1.6.152：首次复查无条件铺一次 */
   /* ★ pl-1.6.120：有本地缓存（eps 骨架/已填）⇒ 弹窗秒开，零网络 ——
      之前每次打开都 POST /api/abepisodes 让 device 现搜 NAS + 700ms 轮询，
      长书（凡人 2101 集）要等好几秒才出列表。
@@ -5542,6 +5686,7 @@ function ebPollModEps(pg, append) {
         if (!seen[eps[i].ep] && ebMod.eps.length < EB_EPS_MAX) ebMod.eps.push(eps[i]);
       }
       ebMod.hasMore = !!d.hasMore; ebMod.nextPage = pg + 1;
+      ebMod.rev = d.rev || 0; ebMod.source = d.source || 'kw';   /* ★ pl-1.6.151 */
       ebModRender();
     }).catch(function(){ $('ebModList').innerHTML = '<div class="note">加载失败</div>'; });
 }
@@ -5582,7 +5727,7 @@ function ebModRender() {
       if (m.eps[zi].ep === m.lastEp) { feRid = m.eps[zi].rid || ''; feSrc = m.eps[zi].source || ''; if (!feTitle) feTitle = m.eps[zi].title || ''; break; }
     }
     h += '<div style="background:rgba(56,139,253,.16);border:1px solid rgba(56,139,253,.4);border-radius:8px;padding:8px 10px;margin-bottom:8px">';
-    h += '  <div style="font-size:12px;color:#7fb2ff;margin-bottom:3px">最近播放（续播往前推 2 秒）</div>';
+    h += '  <div style="font-size:12px;color:#7fb2ff;margin-bottom:3px">最近播放（续播往前推 10 秒）</div>';
     h += '  <div style="display:flex;align-items:center;gap:8px">';
     h += '    <span style="flex:1">第' + m.lastEp + '集 ' + feTitle + ' <span class="hint">（' + fmtMMSS(m.lastPos) + '）</span></span>';
     h += '    <button class="btn sm" onclick="ebPlay(&quot;' + encJs(m.name) + '&quot;,&quot;' + encJs(m.nar) + '&quot;,&quot;' + encJs(m.aid) + '&quot;,' + m.lastEp + ',&quot;' + encJs(feRid) + '&quot;,&quot;' + encJs(feSrc) + '&quot;,&quot;' + encJs(feTitle) + '&quot;)">▶ 续播</button>';
@@ -5590,8 +5735,13 @@ function ebModRender() {
   }
   for (var i = 0; i < list.length; i++) {
     var e = list[i]; var isLast = (e.ep === m.lastEp);
+    var et = (e.title || '');
+    if (/^第\s*\d+\s*集$/.test(et)) et = '';   /* ★ pl-1.6.151：服务端 v1.7.9 缺集行只给集号，别重复拼一遍 */
+    var miss = !!e.missing || !(e.rid || '');
     h += '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid rgba(255,255,255,.06)">';
-    h += '  <span style="flex:1;font-size:13px">第' + e.ep + '集 ' + (e.title || '') + (isLast ? ' <span style="color:#7fb2ff">· 最近</span>' : '') + '</span>';
+    h += '  <span style="flex:1;font-size:13px">第' + e.ep + '集 ' + esc(et)
+       + (miss ? ' <span style="color:#e6a23c;font-size:11px">· 暂无源，点播放重试</span>' : '')
+       + (isLast ? ' <span style="color:#7fb2ff">· 最近</span>' : '') + '</span>';
     h += '  <button class="btn sm" onclick="ebPlay(&quot;' + encJs(m.name) + '&quot;,&quot;' + encJs(m.nar) + '&quot;,&quot;' + encJs(m.aid) + '&quot;,' + e.ep + ',&quot;' + encJs(e.rid || '') + '&quot;,&quot;' + encJs(e.source || '') + '&quot;,&quot;' + encJs(e.title || '') + '&quot;)">播放</button>';
     h += '</div>';
   }
@@ -5617,11 +5767,40 @@ function ebModRender() {
   $('ebModList').innerHTML = h;
 }
 
-/* ---------- 播放：网页点播带续播位置（lastPos-2），并回写进度 ---------- */
+/* ---------- 播放：网页点播带续播位置（lastPos-10，★ pl-1.6.154 与语音/stem 统一），并回写进度 ---------- */
+/* ★ pl-1.6.151：点缺集（rid 空）时先带 ep=N 问服务端做一次**按需**救援，
+   救回真 rid + 真名再交给 /api/abplay —— 播放栏一上来就是真名、点击秒开
+   （服务端 v1.7.5 自动救援 + v1.7.4 取链预热都在这条路径上）。
+   救不回就明确提示，不再用「第 N 集」占位名硬推一个必失败的点播。 */
 function ebPlay(name, nar, aid, ep, rid, src, title) {
+  /* ★ pl-1.6.152：本地缓存里 v1.6.x 遗留的「错误缓存」行可能是
+     「（缺集 · 上游没有第 N 集）」/「第 N 集」文案 + 一个假 rid。
+     旧版只认 !rid ⇒ 直接拿假 rid 硬播，服务端收不到 ep=N，永远救不回来。
+     这几种脏占位文案一律先问服务端一次（该集真有源时纯缓存返回，不回源）。 */
+  var stale = !rid || /缺集|上游没有第/.test(title || '') || /^第\s*\d+\s*集$/.test(title || '');
+  if (stale && aid && ep > 0) {
+    toast('正在为第' + ep + '集找源…');
+    fetch('/api/abep', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({albumId:aid, book:name, ep:ep})})
+      .then(function(r){return r.json();}).then(function(d){
+        if (d && d.ok && !d.missing && d.rid) {
+          ebPlayNow(name, nar, aid, ep, d.rid, d.source || src, d.title || title);
+          if (ebMod && ebMod.aid === aid) {
+            ebRevApply(d.rev, [{ep:ep, title:d.title || '', rid:d.rid,
+                source:d.source || src, missing:false, rescued:true}]);
+          }
+        } else {
+          toast('第' + ep + '集暂时没有源，稍后再试');
+        }
+      }).catch(function(){ toast('救援失败，稍后再试'); });
+    return;
+  }
+  ebPlayNow(name, nar, aid, ep, rid, src, title);
+}
+function ebPlayNow(name, nar, aid, ep, rid, src, title) {
   var pe = ebProgMap[aid];
   var resumePos = 0;
-  if (pe && pe.lastEp === ep && pe.lastPos > 0) resumePos = Math.max(0, pe.lastPos - 2);
+  if (pe && pe.lastEp === ep && pe.lastPos > 0) resumePos = Math.max(0, pe.lastPos - 10);  /* ★ pl-1.6.154：统一 10s */
   ebCurPlay = {aid:aid, ep:ep};
   fetch('/api/abplay', {method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({book:name, narrator:nar, albumId:aid, ep:ep, pos:resumePos,
@@ -5638,6 +5817,52 @@ function ebPlay(name, nar, aid, ep, rid, src, title) {
       ebLoadProg();
     });
 }
+/* ★ pl-1.6.152：把服务端最新集表按 ep 并入当前列表（保留页码 / 滚动位置）。
+   服务端 v1.7.10 统一「没有 rid 就是缺集」：缺集行显式 missing:true / rid:''，
+   真集带真 rid + 真名 —— 两种都要能覆盖本地 v1.6.x 遗留的假 rid 脏行。
+   ★ 只覆盖弹窗/缓存里**已存在**的集号，不往当前窗口追加新集：
+     /api/abrev 返回整本（3000+ 集），追加会撑爆窗口、打乱分页语义。
+   ★ 建 ep→下标索引，避免 3000 × 3000 的 O(n²)（15s 轮询会明显卡顿）。 */
+function ebRevApply(rev, eps) {
+  var m = ebMod; if (!m) return;
+  if (rev) m.rev = rev;
+  m.revApplied = true;
+  if (!eps || !eps.length) return;
+  var idx = {}, cidx = null, j, k;
+  for (j = 0; j < m.eps.length; j++) if (m.eps[j] && m.eps[j].ep) idx[m.eps[j].ep] = j;
+  if (m.cache) {
+    cidx = {};
+    for (k = 0; k < m.cache.length; k++) if (m.cache[k] && m.cache[k].ep) cidx[m.cache[k].ep] = k;
+  }
+  for (var i = 0; i < eps.length; i++) {
+    var ne = eps[i]; if (!ne || !ne.ep) continue;
+    if (!(ne.rid || ne.missing)) continue;      // 服务端没给有效判据：别动本地行
+    var p = idx[ne.ep];
+    if (p != null) m.eps[p] = ne;
+    if (cidx) { var q = cidx[ne.ep]; if (q != null) m.cache[q] = ne; }
+  }
+  var el = $('ebModList'); var sc = el ? el.scrollTop : 0;
+  ebModRender();
+  if (el) el.scrollTop = sc;
+}
+/* ★ pl-1.6.151：详情页打开期间每 15s 轻量复查 —— /api/abrev 只走服务端
+   /api/ab/cache?full=1 纯缓存直读（零回源、零风控）。rev 变了说明别的设备
+   救援 / 补了真名 ⇒ 原地重渲染，不用重开弹窗。关掉弹窗（ebMod=null）自停。 */
+setInterval(function(){
+  var m = ebMod;
+  if (!m || !m.aid) return;
+  fetch('/api/abrev', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({albumId:m.aid, source:m.source || 'kw'})})
+    .then(function(r){return r.json();}).then(function(d){
+      if (!d || !d.ok || !ebMod || ebMod.aid !== m.aid) return;
+      /* ★ pl-1.6.152：首次复查无条件铺一次 —— 服务端 v1.7.10 把历史脏行标成
+         missing:true 是**输出层**改动，rev 不会涨；只靠 rev 比较会永远跳过，
+         本地 v1.6.x 的假 rid 脏行就一直刷不掉（真机实测「点了还是灰的」）。
+         之后才恢复「rev 没变就什么都不做」。 */
+      if (m.revApplied && m.rev && d.rev === m.rev) return;
+      ebRevApply(d.rev, d.episodes || []);
+    }).catch(function(){});
+}, 15000);
 function ebFav(name, nar, aid, src, cnt) {
   fetch('/api/prog/add', {method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({book:name, narrator:nar, albumId:aid, source:src, count:cnt})})
@@ -5655,11 +5880,11 @@ function ebUnfav(aid) {
         body: JSON.stringify({albumId:aid})})
     .then(function(r){return r.json();}).then(function(d){ toast(d.msg || '已取消'); ebLoadProg(); });
 }
-function ebLoadProg() {
+function ebLoadProg(cb) {
   fetch('/api/prog').then(function(r){return r.json();}).then(function(d){
     var list = (d && d.list) ? d.list : [];
-    var c = $('ebProg'); ebProgMap = {};
-    if (!list.length) { c.innerHTML = '<div class="note">还没有收藏的节目</div>'; paintFavCur(); return; }
+    var c = $('ebProg'); ebProgMap = {}; ebProgTs = Date.now();
+    if (!list.length) { c.innerHTML = '<div class="note">还没有收藏的节目</div>'; paintFavCur(); if (cb) cb(); return; }
     var h = '';
     for (var i = 0; i < list.length; i++) {
       var b = list[i]; var aid = b.albumId || ''; ebProgMap[aid] = b;
@@ -5672,13 +5897,48 @@ function ebLoadProg() {
     }
     c.innerHTML = h;
     paintFavCur();   /* ★ v1.3.288：我的节目变了 ⇒ 正在播那颗星跟着亮/灭 */
-  }).catch(function(e){});
+    if (cb) cb();
+  }).catch(function(e){ if (cb) cb(); });
 }
 
 /* 网页发起的听书：周期性把当前播放秒数回写「我的节目」进度（与语音续播共用同一份记忆） */
+/* ★ pl-1.6.161：集号必须跟着**当前真实在播的那一集**走。
+   以前 ebCurPlay.ep 只在网页点播那一刻写入，之后自动连播到第几集都不更新、换书也
+   不清空，而 pos 用的是全局播放秒数 ⇒ 服务端同时收到「第1集 + 第4集秒数」和
+   「第4集 + 第4集秒数」两条，播放记录在第1集/第4集之间来回跳，书级续播也会被写错集。
+   现在：从当前曲目标题解析集号并就地纠正；认不出集号就跳过本轮，当前曲目已经不属于
+   这本书就直接停掉这条回写 —— 权威上报交给 device 的 ProgProgress（它按 player
+   队列当前项算 ep，一直是对的）。 */
+function ebEpNumOf(s) {
+  var m = String(s || "").match(/[0-9]+/);
+  if (m) { return parseInt(m[0], 10) || 0; }
+  var D = "零一二三四五六七八九";
+  var t = String(s || "").replace(/[第集回话章\s\u3000]/g, "");
+  var total = 0, num = 0;
+  for (var i = 0; i < t.length; i++) {
+    var c = t.charAt(i), idx = D.indexOf(c);
+    if (idx > 0) { num = num * 10 + idx; }
+    else if (c === "十") { total += (num || 1) * 10; num = 0; }
+    else if (c === "百") { total += (num || 1) * 100; num = 0; }
+    else if (c === "千") { total += (num || 1) * 1000; num = 0; }
+    else if (c === "两") { num = num * 10 + 2; }
+    else { return 0; }
+  }
+  return total + num;
+}
 setInterval(function(){
   if (!ebCurPlay || !POS_SEC || POS_SEC <= 0) return;
   var p = ebCurPlay;
+  var t = (MI && MI.title) || (S && S.music && S.music.curTitle) || "";
+  var g = t.match(AB_EP_RE);
+  var ce = g ? ebEpNumOf(g[0]) : 0;
+  if (ce <= 0) { return; }                                  // 认不出在播第几集 ⇒ 本轮不报
+  var bk = (ebProgMap[p.aid] || {}).book || "";
+  if (bk && ebBookKey(t).indexOf(ebBookKey(bk)) < 0) {       // 已经换到别的书 ⇒ 停这条回写
+    ebCurPlay = null;
+    return;
+  }
+  p.ep = ce;                                                 // ★ 跟随真实当前集
   fetch('/api/prog/pos', {method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({albumId:p.aid, ep:p.ep, pos:POS_SEC})}).catch(function(){});
 }, 8000);
@@ -6114,7 +6374,7 @@ function ablRenderEps() {
     var lt = m.lastTtl || '';
     for (var z = 0; z < m.eps.length; z++) { if (m.eps[z].ep === m.lastEp) { lt = m.eps[z].title || lt; break; } }
     h += '<div style="background:rgba(56,139,253,.16);border:1px solid rgba(56,139,253,.4);border-radius:8px;padding:8px 10px;margin-bottom:8px">';
-    h += '  <div style="font-size:12px;color:#7fb2ff;margin-bottom:3px">上次听到（续播往前推 2 秒）</div>';
+    h += '  <div style="font-size:12px;color:#7fb2ff;margin-bottom:3px">上次听到（续播往前推 10 秒）</div>';
     h += '  <div style="display:flex;align-items:center;gap:8px">';
     h += '    <span style="flex:1">第' + m.lastEp + '集 ' + esc(lt) + ' <span class="hint">（' + fmtMMSS(m.lastPos) + '）</span></span>';
     h += '    <button class="btn sm" onclick="ablResume()">▶ 续播</button>';

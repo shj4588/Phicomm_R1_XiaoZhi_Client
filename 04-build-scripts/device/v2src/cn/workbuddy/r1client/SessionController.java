@@ -2761,6 +2761,9 @@ public final class SessionController implements
     public void onStt(String text) {
         Log.i(TAG, "STT: " + text);
         SessionLog.i("STT: " + text);
+        /* ★ v1.3.355：留下原话给 abPlay —— 模型常把书名精简成「三体」，
+           用户说的「死神永生」只在原话里（详见 PlayerBridge.noteUtterance）。 */
+        PlayerBridge.noteUtterance(text);
         disarmWakeProbe();   // v1.3.19：服务器听懂了 = 会话是活的，探测解除
         clearShadow();
         sttThisTurn = true;  // v1.3.23：有 STT = 服务器确实在回应，本轮不可能是「空闲告别」
@@ -2788,6 +2791,12 @@ public final class SessionController implements
     public void onClosed(String reason) {
         Log.i(TAG, "ws closed: " + reason);
         SessionLog.i("ws closed: " + reason);
+        // v1.3.330：主动「退下」= 用户明确要安静，别再补那声断连提示音
+        // （60s 自动断开模式才需要，见 enterIdle 里的 cueOnDisconnect）。
+        if (reason != null && reason.startsWith("user-quit")) {
+            cueOnDisconnect = false;
+            main.removeCallbacks(idleAlertTask);
+        }
         enterIdle();
     }
 

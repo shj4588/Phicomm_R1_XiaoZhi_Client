@@ -81,7 +81,12 @@ public final class ProgPlay {
             }
             JSONObject te = eps.optJSONObject(ti);
             String rid = te == null ? "" : te.optString("rid", "").trim();
-            if (rid.length() == 0) {
+            /* ★ v1.3.333：真机回归 —— v1.6.x 遗留的「错误缓存」行只有
+               「（缺集 · 上游没有第 N 集）」/「第 N 集」文案，却可能带着假 rid。
+               旧版只在 rid 为空时才现拉页，这批行直接拿假 rid 去播（语音报
+               「网络好像出了点问题」），服务端也永远收不到 ep=N ⇒ 救不回来。
+               改成「脏占位行」一律强制问服务端一次（ep=N 单点，零批量回源）。 */
+            if (isDirtyPlace(te)) {
                 /* ★ v1.3.298：播时临时解析（=收藏的「播到才搜」）——现拉目标集所在页，
                    拿到精确 rid 就直连；拿不到才交给调用方兜底。 */
                 fillPage(book, aid, ep, pe);
@@ -150,9 +155,10 @@ public final class ProgPlay {
                 }
             }
             String rid = e.optString("rid", "").trim();
-            if (rid.length() == 0) {
+            if (isDirtyPlace(e)) {
                 /* ★ v1.3.298：骨架行播到 ⇒ 现拉那一页再解析（收藏同款「播到才搜」，
-                   只是慢一拍，不再直接 404 烧一片）。 */
+                   只是慢一拍，不再直接 404 烧一片）。
+                   ★ v1.3.333：脏占位行即使带假 rid 也要重问服务端（见 play 注释）。 */
                 JSONObject pe = progEntry(aid);
                 fillPage(pe == null ? "" : pe.optString("book", ""), aid, ep, pe);
                 e = findEp(aid, ep);
@@ -177,16 +183,29 @@ public final class ProgPlay {
 
     /**
      * 拉一页集表并入 Prog 缓存（Keeper 整本填全与播时现拉共用）。
+     * Keeper 的整本逐页预填走 ep=0 —— 绝不批量回源救援（上游风控红线）。
      *
      * @return true = 拿到了行（是否新增由 mergeEpsPage 决定）
      */
     static boolean fetchAndMerge(String book, String albumId, int page, int size, String defSrc) {
+        return fetchAndMerge(book, albumId, page, size, defSrc, 0);
+    }
+
+    /**
+     * ★ v1.3.332：ep&gt;0 时把集号透传给 NAS /api/ab/episodes。
+     * 服务端 v1.7.5 起「ep=N 且该集是占位」会自动做一次精确词救援，救回后
+     * 这一页里该集就是真名 + 真 rid（v1.7.9 缺集行输出「第 N 集」，真集输出真名）。
+     * 只在**真播到这一集 / 这一集没源**（play、resolve 的 fillPage）时带 ep，
+     * 属按需回源；整本填页仍走 ep=0，禁止对几百个缺集批量搜索。
+     */
+    static boolean fetchAndMerge(String book, String albumId, int page, int size,
+                                 String defSrc, int epTarget) {
         try {
             Method m = PlayerBridge.class.getDeclaredMethod("abEpisodes",
                     String.class, String.class, int.class, int.class, int.class);
             m.setAccessible(true);
             Object r = m.invoke(null, book, albumId, Integer.valueOf(page),
-                    Integer.valueOf(size), Integer.valueOf(0));
+                    Integer.valueOf(size), Integer.valueOf(epTarget > 0 ? epTarget : 0));
             if (!(r instanceof JSONObject)) {
                 return false;
             }
@@ -219,8 +238,13 @@ public final class ProgPlay {
                     continue;
                 }
                 JSONObject o = new JSONObject();
+                String erid = firstNonEmpty(e, "rid", "id", "audioId", "trackId");
                 o.put("ep", ep);
-                o.put("rid", firstNonEmpty(e, "rid", "id", "audioId", "trackId"));
+                o.put("rid", erid);
+                /* ★ v1.3.333：只在按需单点（ep=N）请求里带上「服务端明确说这集没源」
+                   的标记，Prog.mergeEpsPage 据此清掉本地脏假 rid。整本预填 ep=0 不带，
+                   避免分页/字段口径差异误清本地真 rid。 */
+                if (epTarget > 0 && erid.length() == 0) o.put("srvMiss", true);
                 o.put("title", firstNonEmpty(e, "title", "name", "epTitle"));
                 o.put("artist", firstNonEmpty(e, "artist", "narrator", "author"));
                 String s = firstNonEmpty(e, "source", "src");
@@ -250,6 +274,19 @@ public final class ProgPlay {
         return -1;
     }
 
+    /**
+     * ★ v1.3.333：这一行要不要「强制重问服务端一次」。
+     * 服务端 v1.7.10 已统一「没有 rid 就是缺集」，且会在 ep=N 时按需精确词救援；
+     * 设备本地的历史错误缓存行（旧缺集文案 / 只有集号 / 带假 rid）必须重问，
+     * 才能拿到真名 + 真 rid 覆盖本地，或变成纯占位行走 /r/prog 解析。
+     */
+    private static boolean isDirtyPlace(JSONObject e) {
+        if (e == null) return true;
+        if (e.optString("rid", "").trim().length() == 0) return true;
+        if (e.optBoolean("missing", false)) return true;
+        return Prog.isDirtyEpTitle(e.optString("title", ""));
+    }
+
     private static JSONObject findEp(String aid, int ep) {
         JSONArray eps = Prog.getEps(aid);
         int i = locateEp(eps, ep);
@@ -267,15 +304,18 @@ public final class ProgPlay {
         return null;
     }
 
-    /** 只拉目标集所在的那一页（一次 NAS 调用），拿到就并进缓存。 */
+    /** 只拉目标集所在的那一页（一次 NAS 调用），拿到就并进缓存。
+     *  ★ v1.3.332：带 ep 让服务端对这一集做按需救援 —— 缺集占位播到时才有机会
+     *  换成真 rid + 真名（旧版 ep=0 只会拿回占位行，于是 resolve 永远 ERR）。 */
     private static void fillPage(String book, String aid, int ep, JSONObject pe) {
         if (aid.length() == 0) {
             return;
         }
         int page = (ep - 1) / PAGE_SIZE + 1;
         String src = pe == null ? "" : pe.optString("source", "").trim();
-        boolean got = fetchAndMerge(book, aid, page, PAGE_SIZE, src);
-        Log.i(TAG, "fillPage aid=" + aid + " ep=" + ep + " page=" + page + " got=" + got);
+        boolean got = fetchAndMerge(book, aid, page, PAGE_SIZE, src, ep);
+        Log.i(TAG, "fillPage aid=" + aid + " ep=" + ep + " page=" + page
+                + " rescueEp=" + ep + " got=" + got);
     }
 
     /** 占位行标题：带书名（仿收藏/abQueueBook 风格）—— tail-kick、网页判据都靠它认书。 */

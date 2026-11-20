@@ -943,12 +943,52 @@ public final class PlayerBridge {
     /** 单个 PlaySong 条目。itemId 用 100_local_MUSIC_<n> 模仿原厂酷我 id 的形态。 */
     private static JSONObject song(String itemId, String title, String url, String artist)
             throws Exception {
+        return song(itemId, title, url, artist, "");
+    }
+
+    /**
+     * ★ v1.3.350：**入队即盖章** —— album 位写「这一项属于哪本书」。
+     *
+     * <p>事故（实测）：R1 语音点播在线书《仙逆》，服务端一条记录都没有。
+     * 队列项里本来就没写书名（旧 {@code song()} 只给 title/url/artist），而
+     * {@link #queueItemBook} 的兜底是拿队列 URL 去 tracks 表**全等**比对 ——
+     * 队列 URL 经 {@link #withDevIdentity} 追加了 {@code &dev=…&devName=…}，
+     * tracks[3] 存的是原始地址 ⇒ 永远不相等 ⇒ 书名空 ⇒ 上报侧按
+     * 「认不出就不报」直接放弃。</p>
+     *
+     * <p>而 device 自己推书时 {@code tracks[4]} 就是书名（{@code abQueueBook} /
+     * {@code abQueueProgLazy} 都写 book），只是推给 player 时丢掉了。这里补上：
+     * 消费方（上报、网页队列、下一曲记忆）只读不算。</p>
+     */
+    private static JSONObject song(String itemId, String title, String url, String artist,
+            String album) throws Exception {
         JSONObject o = new JSONObject();
         o.put("itemId", itemId);
         o.put("title", title);
-        o.put("url", url);
+        o.put("url", withDevIdentity(url));   // ★ v1.3.346：拉流 URL 带 dev 设备身份
         o.put("artist", artist);
+        if (album != null && album.trim().length() > 0) {
+            o.put("album", album.trim());     // 原厂 PlaySong.album ⇒ /api/queue 的 album 位
+        }
         return o;
+    }
+
+    /**
+     * ★ v1.3.346：给指向本机 NAS 的惰性拉流地址（/r/ /m/）挂设备身份参数，
+     *   让服务端 devIdOf 认领——R1 的 MediaPlayer 拉流带不了 X-Dev-Mac 头，
+     *   docker 端口映射下全落进「网关 IP / 网页 / 未报 MAC 的设备」桶。
+     *   URL 里已有 ?（title/artist/k= 等）时用 &；外部电台/直链绝对地址不含
+     *   /r/ 或 /m/ 路径，原样返回，绝不给第三方源带我们的 MAC。
+     */
+    private static String withDevIdentity(String url) {
+        if (url == null || url.length() == 0) { return url; }
+        boolean lazy = url.contains("/r/") || url.contains("/m/");
+        if (!lazy) { return url; }
+        String mac = mac12();
+        if (mac.length() < 8) { return url; }   // 读不到 MAC 就降级，服务端退 IP
+        String dn = "R1-" + mac.substring(Math.max(0, mac.length() - 4));
+        String sep = url.indexOf('?') >= 0 ? "&" : "?";
+        return url + sep + "dev=" + mac + "&devName=" + dn;
     }
 
     /**
@@ -1062,7 +1102,10 @@ public final class PlayerBridge {
                 }
                 String[] e = tracks.get(i);
                 arr.put(song("100_local_MUSIC_" + i, e[0], urlOf(e),
-                        (e.length > 1) ? e[1] : ""));
+                        (e.length > 1) ? e[1] : "",
+                        /* ★ v1.3.350：tracks[4] 就是书名（abQueueBook / abQueueProgLazy 写的），
+                           必须随队列项一起推给 player，否则 device 侧认不出「在播哪本书」。 */
+                        (e.length > 4) ? e[4] : ""));
             }
             JSONObject root = new JSONObject();
             root.put("index", startIndex);
@@ -2599,7 +2642,8 @@ public final class PlayerBridge {
      *
      * @return 基址；indexUrl 也没拉到时返回 {@code null}
      */
-    private static String nasBase() {
+    /* ★ v1.3.336：开成包内可见 —— ProgProgress 的书级共享上报也要拿 NAS 基址 */
+    static String nasBase() {
         String b = (base != null && base.length() > 0) ? base : "";
         if (b.length() == 0) {
             String iu = indexUrl;
@@ -5869,6 +5913,37 @@ public final class PlayerBridge {
         }
     }
 
+    /**
+     * ★ 1.3.335：问服务端歌曲 rid 缓存（v1.7.11 GET /api/song/resolve）。
+     * 命中返回 {ok:true, rid, source, title, artist, cached...}；没有/出错返回 null。
+     * 服务端只做**单条**解析（缓存命中零上游；未命中它自己单次搜索 + 落缓存 +
+     * 10 分钟负缓存），device 这里绝不批量 —— 与有声书缺集救援同一条风控红线。
+     * 用户拍板（2026-11-14）：「歌曲也和有声书一样走服务器 rid 缓存吧」。
+     */
+    private static JSONObject songResolveSrv(String title, String artist) {
+        try {
+            String b = nasBase();
+            if (b == null || title == null || title.trim().length() == 0) {
+                return null;
+            }
+            String js = httpGet(b + "/api/song/resolve?title="
+                    + URLEncoder.encode(title.trim(), "UTF-8")
+                    + ((artist != null && artist.trim().length() > 0)
+                        ? ("&artist=" + URLEncoder.encode(artist.trim(), "UTF-8")) : ""),
+                    15000);
+            if (js == null) {
+                return null;
+            }
+            JSONObject o = new JSONObject(js);
+            if (o.optBoolean("ok", false) && o.optString("rid", "").trim().length() > 0) {
+                return o;
+            }
+        } catch (Throwable t) {
+            SessionLog.i("song resolve srv: " + t);
+        }
+        return null;
+    }
+
     public static String favResolve(JSONObject args) {
         String k = (args == null) ? "" : args.optString("k", "").trim();
         String t = (args == null) ? "" : args.optString("title", "").trim();
@@ -5952,7 +6027,18 @@ public final class PlayerBridge {
                《失恋阵线联盟》被解析成有声书第0集）。裸书名歌搜必然 unsure
                （歌手闸），落到书库探测，书的行为不丢。 */
             String kind0 = Fav.entry(k).optString("kind", "");
-            JSONObject s = favSearchOne(t, a, 8000, kind0);
+            /* ★ 1.3.335：服务端歌曲 rid 缓存优先（v1.7.11）—— 搜过的歌零上游秒回；
+               没搜过由服务端替我们搜并落缓存（多设备共享同一份）。
+               节目条目不走这条（书有专门的 favResolveProgram 书库探测）。 */
+            JSONObject s = null;
+            boolean srvMiss = false;
+            if (!"program".equals(kind0)) {
+                s = songResolveSrv(t, a);
+                srvMiss = (s == null);
+            }
+            if (s == null) {
+                s = favSearchOne(t, a, 8000, kind0);
+            }
             boolean unsure = (s != null) && s.optBoolean("unsure", false);
             if ((s == null || unsure) && !"program".equals(kind0)) {
                 /* ★ v1.3.266：书变成歌的老毛病 —— 裸书名（无「有声书/评书」等关键词，
@@ -5968,7 +6054,9 @@ public final class PlayerBridge {
             if (unsure || src.length() == 0 || rid.length() == 0) {
                 /* ★ 跟导入时同一口径：unsure（歌名对不上）不记负缓存 —— 那是
                    「没敢认」，不是「搜不到」，记下去会把真歌永久判死。 */
-                if (s == null) {
+                /* ★ 1.3.335：服务端答不上（负缓存 / 网络抖动）不判死 —— 负缓存窗口
+                   过后用户再点还能重试；只有 device 自己真搜过没有才 markNoSrc。 */
+                if (s == null && !srvMiss) {
                     Fav.markNoSrc(k);
                 }
                 return "ERR 没搜到《" + t + "》的可播地址";
@@ -6963,6 +7051,36 @@ public final class PlayerBridge {
                 } else {
                     via = "none";
                 }
+                /* ★ 1.3.335：节目占位之外，普通歌五路全空不再直接 ERR ——
+                   先问服务端歌曲 rid 缓存（v1.7.11 /api/song/resolve）：
+                   搜过秒回；没搜过服务端单次搜 + 落缓存，拿到就回写 fav.json，
+                   下次直接走 ④ 精确源。与有声书缺集同款「按需单条」口径。 */
+                if (pu.length() == 0 && !"program".equals(fk)) {
+                    JSONObject sc = songResolveSrv(rt.length() > 0 ? rt : title,
+                            ra.length() > 0 ? ra : artist);
+                    String srid = (sc == null) ? "" : sc.optString("rid", "").trim();
+                    String ssrc = (sc == null) ? "" : sc.optString("source", "").trim();
+                    if (srid.length() > 0 && ssrc.length() > 0 && b != null) {
+                        List<String[]> srows = new ArrayList<String[]>();
+                        srows.add(new String[]{k, "source", ssrc});
+                        srows.add(new String[]{k, "rid", srid});
+                        String stt = sc.optString("title", "").trim();
+                        String saa = sc.optString("artist", "").trim();
+                        if (stt.length() > 0 && !stt.equals(title)) {
+                            srows.add(new String[]{k, "rtitle", stt});
+                        }
+                        if (saa.length() > 0 && !saa.equals(artist)) {
+                            srows.add(new String[]{k, "rartist", saa});
+                        }
+                        Fav.patchBatch(srows);
+                        pu = b + "/r/" + ssrc + "/" + srid
+                                + "?title=" + enc(rt.length() > 0 ? rt
+                                        : (stt.length() > 0 ? stt : title))
+                                + "&artist=" + enc(ra.length() > 0 ? ra
+                                        : (saa.length() > 0 ? saa : artist));
+                        via = "srv=" + ssrc + "/" + srid;
+                    }
+                }
                 if (pu.length() == 0) {
                     return "ERR 《" + title + "》还没配上源 —— 先在搜索结果里点 ▶ 播放，"
                             + "确认是对的版本后回收藏列表点这条右边的 🔗 绑过来";
@@ -7055,6 +7173,7 @@ public final class PlayerBridge {
             // 在会话结束时把唤醒期间暂停的音乐接回去（见 MusicResume 类注释）。
             // v1.3.132：顺手维护 softPlaying 软状态（TTS 互斥的让路判据之一）。
             if ("pause".equals(op) || "stop".equals(op)) {
+                ProgProgress.srvFinal(op);   // ★ v1.3.340：结算上报（不等 15s 周期）
                 MusicResume.noteUserPause();
                 noteStopped();          // v1.3.136：落盘（重启后不该再以为在播）
             } else if ("play".equals(op) || "next".equals(op) || "prev".equals(op)
@@ -7146,6 +7265,15 @@ public final class PlayerBridge {
                 avt("Previous", "<u:Previous xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">"
                         + "<InstanceID>0</InstanceID></u:Previous>");
                 return "OK 上一曲";
+            }
+            /* ★ v1.3.358：进度 / 时长 / 跳转（语音 seek_play，对齐 stem 的 self.stem.seek_play）。
+               只查进度与「快进/后退/跳到第 N 秒」都走这里；真拖由 player 执行，
+               可行性也由它判（本地播放态才拖得动，电台直播流不行）。 */
+            if ("progress".equals(op)) {
+                return progressText();
+            }
+            if ("seek_play".equals(op) || "seek".equals(op)) {
+                return seekPlay(args);
             }
             if ("status".equals(op)) {
                 // v1.3.136：status 是模型判断「到底有没有在播」的唯一依据 ——
@@ -7268,6 +7396,17 @@ public final class PlayerBridge {
                 if (playStateTs > 0) {
                     sb.append("(").append(
                             (System.currentTimeMillis() - playStateTs) / 1000L).append("秒前)");
+                }
+                /* ★ v1.3.358：把「已播到 / 共多长 / 还剩」一并答出来 —— 用户问
+                   「这集多长」「还剩多久」「放了多久」时模型不用再猜（以前只有曲名）。
+                   数据来自 player 的 music.durMs（播放器自己算的真值）。 */
+                try {
+                    String pl = progLine(playerMusic());
+                    if (pl.length() > 0) {
+                        sb.append(" | 进度：").append(pl);
+                    }
+                } catch (Throwable t34) {
+                    /* 进度是增量信息，取不到就不报，别影响状态主输出 */
                 }
                 sb.append(" [dlna=").append(avtUrl).append("]");
                 return sb.toString();
@@ -8427,7 +8566,7 @@ public final class PlayerBridge {
     }
 
     /**
-     * 查本地库挑一本（只认 kind=book）。
+     * 查本地库挑一本。
      *
      * @return 命中返回 book 对象（含 id/name/title/count）；不够像就返 null —— 宁可走在线，
      *         也不要因为「名字里有两个字相同」把别的书播出来。
@@ -8454,8 +8593,8 @@ public final class PlayerBridge {
             int bestScore = 0;
             for (int i = 0; i < bs.length(); i++) {
                 JSONObject x = bs.optJSONObject(i);
-                if (x == null || "coll".equals(x.optString("kind", ""))) {
-                    continue;   // 合集（如《三体》三部）不自动挑部，仍走在线版
+                if (x == null) {
+                    continue;
                 }
                 String nm = x.optString("title", "");
                 if (nm.length() == 0) {
@@ -8473,10 +8612,188 @@ public final class PlayerBridge {
                     best = x;
                 }
             }
-            return bestScore >= 60 ? best : null;
+            if (bestScore < 60) {
+                /* ★ v1.3.355：服务端已经做过匹配判定（v1.7.46 起含「q 里有书名」的整句兜底
+                   和部名归属），device 这层裸书名打分只该用来「挑更好的」，不该「一票否决」：
+                   用户只点部名说「死神永生」时，kq=死神永生 与 kn=三体 互不包含 ⇒ 0 分，
+                   服务端明明给出了唯一命中（还带 hitSub），却被这里丢掉。
+                   规则（保守）：
+                     · 有带 hitSub 的 ⇒ 直接用（服务端已认出是哪一部，最可信）
+                     · 只回 1 条 ⇒ 用它（唯一候选，服务端匹配规则已收窄到「q 含书名」）
+                     · 多条且都没 hitSub ⇒ 仍返回 null（宁可走在线，也不赌书名） */
+                JSONObject withSub = null;
+                for (int i = 0; i < bs.length(); i++) {
+                    JSONObject x = bs.optJSONObject(i);
+                    if (x != null && x.optString("hitSub", "").length() > 0) {
+                        withSub = x;
+                        break;
+                    }
+                }
+                if (withSub != null) {
+                    return collPick(withSub);
+                }
+                if (bs.length() == 1) {
+                    JSONObject only = bs.optJSONObject(0);
+                    if (only != null) {
+                        return collPick(only);
+                    }
+                }
+                return null;
+            }
+            /* ★ v1.3.353：合集（kind=coll，如《三体》三部）不再一票跳过。
+               老代码这里 `continue`（注释「不自动挑部，仍走在线版」），于是语音点播
+               《三体》永远拿不到本地 id ⇒ 只能 Web 上手动展开子书点。服务端
+               /ap/play 的口径本来就是「合集先放第一部」，这里对齐并做得更细。 */
+            return collPick(best);
         } catch (Throwable t) {
             Log.w(TAG, "ablFind: " + t);
             return null;
+        }
+    }
+
+    /**
+     * ★ v1.3.353：合集 → 挑一部**能播的子书**，返回形状与普通 book 一致（id 是子书 id）。
+     *
+     * <p>为什么要挑而不是把合集整个交出去：`/api/abl/eps?id=<合集 id>` 返回的
+     * {@code episodes} 是**空数组**（合集只有 subs 清单，集表在子书那层），
+     * 所以拿合集 id 去拉集必然空 ⇒ 播不了。Web 上手动点是先展开 subs 再点子书，
+     * 语音这条路以前没有这一步（ablFind 直接跳过 coll），等于彻底没入口。</p>
+     *
+     * <p>挑部顺序（越具体越优先）：</p>
+     * <ol>
+     *   <li>★ v1.3.354：服务端回传的 {@code hitSub} —— 用户语音里直接点了某一部
+     *       （「播放三体死神永生第2集」⇒ books() 认出「死神永生Ⅲ」）。意图最明确，排第一。</li>
+     *   <li>服务端 {@code books()} 聚合出的 {@code lastSub}（父级记忆来自某个子书时才会给）</li>
+     *   <li>父级 {@code lastTitle} 前缀认领 —— Web 端点集合会往 POS[合集id] 写一条，
+     *       形如「黑暗森林-第86集」，把子书名剥掉罗马数字后比前缀即可命中「黑暗森林Ⅱ」</li>
+     *   <li>都没听过 ⇒ 第一部（与服务端 /ap/play 同口径）</li>
+     * </ol>
+     *
+     * <p>返回对象的**书身份是子书名**（v1.3.357 起，用户拍板「后面的名字才是书名，
+     * 三体只是系列」）：「三体」只作为 {@code series} 留在对象上供展示/日志用，
+     * name/title 与队列 album、/v1/pos 上报一律是「黑暗森林Ⅱ」这种子书名 ——
+     * 否则三部曲共用「三体」一个书键，书级进度和播放记录分不出在听哪一部。</p>
+     */
+    /* ★ v1.3.355：记住本轮用户原话（ASR 文本）。
+
+       为什么必须记：小智模型调 ab_play 时经常把书名**精简**成「三体」，用户说的
+       「死神永生」在参数里就丢了 —— 而 ab_search 只回在线书源，看不到本地合集的分部，
+       模型也就无从知道该带上哪一部。原话是这件事唯一可靠的来源。
+
+       有效期 90 秒（一句话到工具调用之间的正常间隔），不消费 —— 同一轮可能连着
+       问几次（先搜再播、或播错重说）。超时即失效，避免「上一轮的话」污染这一轮。 */
+    private static volatile String lastUtter = "";
+    private static volatile long lastUtterAt = 0L;
+
+    public static void noteUtterance(String t) {
+        String s = (t == null) ? "" : t.trim();
+        if (s.length() == 0) {
+            return;
+        }
+        lastUtter = s;
+        lastUtterAt = System.currentTimeMillis();
+    }
+
+    /** @return 90 秒内的用户原话；没说过 / 已过期返回空串 */
+    public static String recentUtterance() {
+        if (lastUtterAt == 0L) {
+            return "";
+        }
+        if (System.currentTimeMillis() - lastUtterAt > 90000L) {
+            return "";
+        }
+        return lastUtter;
+    }
+
+    private static JSONObject collPick(JSONObject x) {
+        if (x == null || !"coll".equals(x.optString("kind", ""))) {
+            return x;
+        }
+        JSONArray subs = x.optJSONArray("subs");
+        if (subs == null || subs.length() == 0) {
+            return null;                        // 空合集（盘上只有目录、没有音频）
+        }
+        JSONObject pick = null;
+        /* ★ v1.3.354：用户在语音里**点到了某一部**（「播放三体死神永生第2集」）。
+           服务端 books() 会拿整句去认子书，回传 hitSub（「死神永生Ⅲ」）。
+           这是最明确的意图，必须压过「上次听的那部」—— 否则用户说死神永生，
+           只要上次听的是地球往事，就还是接着播地球往事。 */
+        String hitSub = x.optString("hitSub", "").trim();
+        if (hitSub.length() > 0) {
+            for (int i = 0; i < subs.length(); i++) {
+                JSONObject s = subs.optJSONObject(i);
+                if (s != null && hitSub.equals(s.optString("name", "").trim())) {
+                    pick = s;
+                    break;
+                }
+            }
+        }
+        String lastSub = x.optString("lastSub", "").trim();
+        if (pick == null && lastSub.length() > 0) {
+            for (int i = 0; i < subs.length(); i++) {
+                JSONObject s = subs.optJSONObject(i);
+                if (s != null && lastSub.equals(s.optString("name", "").trim())) {
+                    pick = s;
+                    break;
+                }
+            }
+        }
+        if (pick == null) {
+            String lt = ablKey(x.optString("lastTitle", ""));
+            if (lt.length() > 0) {
+                for (int i = 0; i < subs.length() && pick == null; i++) {
+                    JSONObject s = subs.optJSONObject(i);
+                    if (s == null) {
+                        continue;
+                    }
+                    /* 子书名末尾的部序号（Ⅰ/Ⅱ/Ⅲ、第2部、2）要剥掉再比：
+                       「黑暗森林Ⅱ」→ 主干「黑暗森林」，而 lastTitle 是「黑暗森林-第86集」。 */
+                    String kn = ablKey(s.optString("name", ""))
+                            .replaceAll("[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅰⅱⅲⅳⅴⅵⅶⅷⅸⅹ]+$", "")
+                            .replaceAll("(第?[0-9一二三四五六七八九十]+[部卷册])$", "");
+                    if (kn.length() >= 2 && lt.indexOf(kn) >= 0) {
+                        pick = s;
+                    }
+                }
+            }
+        }
+        if (pick == null) {
+            pick = subs.optJSONObject(0);
+        }
+        if (pick == null) {
+            return null;
+        }
+        String coll = x.optString("name", "").trim();
+        String subName = pick.optString("name", "").trim();
+        try {
+            JSONObject o = new JSONObject(pick.toString());
+            o.remove("subs");
+            o.put("kind", "book");
+            /* ★ v1.3.357：书名用**子书名**，合集名退居 series。
+               服务端 v1.7.48 的 episodes() 也是这个口径（name=子书名、series=合集名），
+               两边必须一致 —— 队列 album / /v1/pos / 服务端书键才能归到同一本。 */
+            if (subName.length() > 0) {
+                o.put("name", subName);
+                if (o.optString("title", "").length() == 0) {
+                    o.put("title", subName);
+                }
+            }
+            if (coll.length() > 0) {
+                o.put("coll", coll);            // 合集名（兼容旧字段）
+                o.put("series", coll);          // 系列名，只给展示/日志用
+            }
+            /* ★ v1.3.355：把「点了哪一部」透给调用方 —— abPlay 靠它决定要不要
+               再拿用户原话补一次（原话命中才带 hitSub）。 */
+            if (hitSub.length() > 0) {
+                o.put("hitSub", hitSub);
+            }
+            Log.i(TAG, "abl coll pick: " + coll + " → " + pick.optString("name", "")
+                    + "（" + pick.optInt("count", 0) + " 集）"
+                    + (hitSub.length() > 0 ? " [语音点名 hitSub=" + hitSub + "]" : ""));
+            return o;
+        } catch (Throwable t) {
+            Log.w(TAG, "collPick: " + t);
+            return pick;
         }
     }
 
@@ -8532,6 +8849,12 @@ public final class PlayerBridge {
             }
             JSONObject d = new JSONObject();
             d.put("book", nm);
+            /* ★ v1.3.357：合集子书带上系列名（服务端 v1.7.48 起 series=合集名），
+               只给展示用；书身份始终是 book/name（子书名）。 */
+            String sr = o.optString("series", "").trim();
+            if (sr.length() > 0) {
+                d.put("series", sr);
+            }
             d.put("narrator", nar);
             d.put("albumId", "abl:" + id);
             d.put("source", "abl");
@@ -8918,6 +9241,16 @@ public final class PlayerBridge {
                     continue;
                 }
                 String title = e.optString("title", "");
+                /* ★ 1.3.333：服务端 v1.7.9 起缺集行只输出「第 N 集」，推到播放队列后
+                   整屏都是「第 N 集」，分不清是哪本书。占位/纯集号行补上书名再入列
+                   （真集本来就带书名，不动）；队列、播放页、语音播报同时受益。
+                   ★ 1.3.334：书名用短名 —— 缓存全名「仙逆丨多人剧丨…丨完结」太长，
+                   列表里看不到集数（用户实测反馈）。 */
+                if (Prog.isDirtyEpTitle(title) && book != null && book.length() > 0) {
+                    String sbook = Prog.shortBook(book);
+                    title = "《" + sbook + "》" + (title.trim().length() > 0
+                            ? title.trim() : ("第" + ep + "集"));
+                }
                 String artist = e.optString("artist", "");
                 String source = e.optString("source", "kw");
                 String rid = e.optString("rid", "");
@@ -9302,10 +9635,31 @@ public final class PlayerBridge {
             String b0 = nasBase();
             if (b0 != null) {
                 String lid = albumArg.startsWith("abl:") ? albumArg.substring(4) : "";
+                /* ★ v1.3.357：本地书**书身份**（子书名）优先取 ablFind/collPick 算出来的
+                   那一份 —— 它是 device 侧最权威的判断（合集已按 hitSub/lastSub 落到具体一部），
+                   老服务端（≤1.7.47）集表回的还是父书名，不能被它盖掉。 */
+                String lname = "";
                 if (lid.length() == 0) {
-                    JSONObject lbook = ablFind(b0, bq);
+                    JSONObject lbook = null;
+                    /* ★ v1.3.355：先拿「用户原话」试一次。
+                       模型调 ab_play 常把书名精简成「三体」，「死神永生」只留在原话里；
+                       原话命中且**认出了分部**才采用，否则回落到 bq 的常规匹配
+                       （纯「播放三体」时原话没有分部，行为与以前完全一致）。 */
+                    String uq = recentUtterance();
+                    if (uq.length() > 0) {
+                        JSONObject h = ablFind(b0, uq);
+                        if (h != null && h.optString("hitSub", "").length() > 0) {
+                            lbook = h;
+                            Log.i(TAG, "abPlay 原话补部名: " + uq + " → hitSub="
+                                    + h.optString("hitSub", ""));
+                        }
+                    }
+                    if (lbook == null) {
+                        lbook = ablFind(b0, bq);
+                    }
                     if (lbook != null) {
                         lid = lbook.optString("id", "").trim();
+                        lname = lbook.optString("name", "").trim();
                     }
                 }
                 if (lid.length() > 0) {
@@ -9322,7 +9676,22 @@ public final class PlayerBridge {
                         }
                     }
                     if (lep0 != null) {
-                        String lbk = ldoc.optString("book", q);
+                        /* ★ v1.3.357：书名 = **子书名**（「黑暗森林Ⅱ」），不是合集名（「三体」）。
+                           取值顺序：device collPick 认出的那部 → 服务端集表 book/name
+                           （v1.7.48 起也是子书名）→ 用户原话 q。三体这种合集三部曲
+                           从此各自一条书级记录，不再糊成「三体」。
+                           老代码只读不存在的 `book` 字段 ⇒ 一律退回 q，
+                           用户说「三体死神永生」就会把书级记录写成「三体死神永生」。 */
+                        String lbk = lname;
+                        if (lbk.length() == 0) {
+                            lbk = ldoc.optString("book", "").trim();
+                        }
+                        if (lbk.length() == 0) {
+                            lbk = ldoc.optString("name", "").trim();
+                        }
+                        if (lbk.length() == 0) {
+                            lbk = q;
+                        }
                         int ltot = ldoc.optInt("total", 0);
                         abLoaderSave(lbk, "abl:" + lid, "abl", 1,
                                 ldoc.optInt("size", 200), ltot, 0, 0);
@@ -9418,6 +9787,87 @@ public final class PlayerBridge {
 
     /** v1.3.280：player 真队列正在播的节目行 → {书名(可能空), 集号}；非节目/解析不出返 null。
         书名来自 device tracks 里同 url 行的 slot[4]（device 推的批才有记）。 */
+    /** ★ 1.3.348：队列项 → 书名。**只读队列项自带的身份，绝不猜。**
+     *
+     * <p>事故（实测）：R1 播本地节目《道诡异仙》第 2 集，播放记录被写成《遮天》。
+     * 老实现只走下面第 ③ 步（拿 URL 去 device 自己的 tracks 表反查），本地节目是
+     * player 入的列、tracks 里没有 ⇒ 书名空 ⇒ 上报侧退回全局 SP 的
+     * {@code ab_loader_book}（上一本在线书「遮天」）⇒ 张冠李戴。</p>
+     *
+     * <p>现在的来源顺序，每一档都是**权威数据**，没有一档是「上一次的残留」：</p>
+     * <ol>
+     *   <li>album —— 入队方盖的章。player 入本地节目列时写书名
+     *       （见 {@code PCtl.newSong(..., book)}），本工程里 album 一直是书名位；</li>
+     *   <li>本地节目（itemId {@code abl_…} 或 URL 走 {@code /m/}）退用 artist ——
+     *       老 player 入的队列没有 album，而 {@code /api/ablplay} 的 artist 就是
+     *       「书名」或「书名 · 副标题」；</li>
+     *   <li>tracks 表按 URL 反查 —— device 自己推的在线书队列（表是它写的）；</li>
+     *   <li>都没有 ⇒ 返回空串，调用方**不上报**。</li>
+     * </ol>
+     */
+    private static String queueItemBook(JSONObject it, String itemId, String url) {
+        /* ★ 1.3.350：album 位放**所有**入队方盖的章，先看它 —— device 推书时
+           tracks[4]=书名，player 入本地节目时 newSong(..., book) 也写这里。
+           以前只在「本地节目」分支读 album，在线书（device 推的）被漏掉，
+           退到 URL 反查又因 dev 参数比对失败 ⇒ 《仙逆》一条记录都没有。 */
+        String al = it.optString("album", "").trim();
+        if (al.length() > 0) {
+            return al;
+        }
+        boolean local = (itemId != null && itemId.startsWith("abl_"))
+                || (url != null && url.indexOf("/m/") >= 0);
+        if (local) {
+            String art = it.optString("artist", "").trim();
+            /* ★ v1.3.357：player /api/ablplay 的 artist 是「合集名 · 子书名」
+               （WebSrv: artist = sub ? book + " · " + sub : book）。书名在**后面** ——
+               用户口径「后面的名字才是书名，前者只是系列」。以前取前段会把
+               「三体 · 黑暗森林Ⅱ」记成「三体」，三部曲又糊成一本。 */
+            int sp = art.indexOf(" · ");
+            return (sp > 0) ? art.substring(sp + 3).trim() : art;
+        }
+        if (url != null && url.length() > 0) {
+            String k = mediaKeyOf(url);
+            if (k.length() > 0) {
+                synchronized (tracks) {
+                    for (String[] r : tracks) {
+                        /* ★ 1.3.350：不能全等比 URL —— 队列 URL 被 withDevIdentity 追加了
+                           dev/devName，player 拉流时又加 live=1，tracks[3] 是原始地址。
+                           只比「媒体身份」：去掉协议/host/query 后的路径
+                           （/r/<src>/<rid> 或 /m/…），这才是同一集。 */
+                        if (r != null && r.length > 3 && k.equals(mediaKeyOf(r[3]))) {
+                            return (r.length > 4 && r[4] != null) ? r[4].trim() : "";
+                        }
+                    }
+                }
+            }
+        }
+        return "";
+    }
+
+    /** ★ 1.3.350：URL 的「媒体身份」—— 去协议、去 host、去 query，只留路径。
+     *  {@code http://192.168.2.14:8100/r/kw/228593095?x=1&dev=…&live=1}
+     *  ⇒ {@code /r/kw/228593095}。用于「同一集」的比较，不用来判断播放。 */
+    private static String mediaKeyOf(String url) {
+        if (url == null) {
+            return "";
+        }
+        String s = url.trim();
+        int q = s.indexOf('?');
+        if (q >= 0) {
+            s = s.substring(0, q);
+        }
+        int h = s.indexOf('#');
+        if (h >= 0) {
+            s = s.substring(0, h);
+        }
+        int sch = s.indexOf("://");
+        if (sch >= 0) {
+            int sl = s.indexOf('/', sch + 3);
+            s = (sl >= 0) ? s.substring(sl) : "";
+        }
+        return s;
+    }
+
     private static String[] liveNowRow() {
         JSONObject p = playerLiveQueue(0);
         if (p == null) {
@@ -9437,25 +9887,32 @@ public final class PlayerBridge {
             if (!abLikely(t)) {
                 return null;
             }
+            String itemId = it.optString("itemId", "");
             int ep = abEpNo(t);
+            /* ★ 1.3.348：本地节目的集号在 itemId 尾段（abl_&lt;aid&gt;_&lt;ep&gt;，player 入队时拼的），
+               比标题正则可靠 —— 标题可能叫「序章」压根没有集号。 */
+            if (itemId.startsWith("abl_")) {
+                int k = itemId.lastIndexOf('_');
+                if (k >= 0 && k + 1 < itemId.length()) {
+                    try {
+                        int ie = Integer.parseInt(itemId.substring(k + 1));
+                        if (ie > 0) {
+                            ep = ie;
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
             if (ep <= 0) {
                 return null;
             }
             String url = it.optString("url", "");
-            String book = "";
-            if (url.length() > 0) {
-                synchronized (tracks) {
-                    for (String[] r : tracks) {
-                        if (r != null && r.length > 3 && url.equals(r[3])) {
-                            book = r.length > 4 ? r[4] : "";
-                            break;
-                        }
-                    }
-                }
-            }
+            String book = queueItemBook(it, itemId, url);
             Log.i(TAG, "abNext live cur=" + cur + " book=" + book + " ep=" + ep
-                    + " title=" + t);
-            return new String[]{book, String.valueOf(ep)};
+                    + " title=" + t + " itemId=" + itemId);
+            /* ★ v1.3.357：第三位带 URL —— 调用方据此判断「本地书」，
+               本地书名是服务端本地库的子书名（干净），不该再过在线书那套 shortBook。 */
+            return new String[]{book, String.valueOf(ep), url};
         }
         return null;
     }
@@ -10030,6 +10487,143 @@ public final class PlayerBridge {
         return r;
     }
 
+    /** ★ v1.3.336 P1 书级共享：问服务端书级共享进度（GET /v1/resume?q=<书名>，2.5s 超时）。
+     *  命中（books 共享表里有这本、ep>0）返回服务端 JSON；没进度/网络失败一律 null ——
+     *  调用方拿 null 就走原本地记忆链路，行为与 1.3.335 完全一致。 */
+    private static JSONObject srvResume(String book) {
+        try {
+            String b = nasBase();
+            if (b == null || b.length() == 0 || book == null || book.trim().length() == 0) {
+                return null;
+            }
+            // ★ 1.3.347：带上设备标识（MAC12）—— 服务端 v1.7.38 设备分组按 ?dev= 严格隔离
+            //   进度；不带的话匿名读退回「全组最新」，分组隔离对 R1 就不生效了。
+            String m = mac12();
+            String s = httpGet(b + "/v1/resume?q="
+                    + java.net.URLEncoder.encode(book.trim(), "UTF-8")
+                    + (m.length() > 0 ? ("&dev=" + m) : ""), 2500);
+            if (s == null || s.indexOf("\"found\":true") < 0) {
+                return null;
+            }
+            JSONObject j = new JSONObject(s);
+            return j.optInt("ep", 0) > 0 ? j : null;
+        } catch (Throwable t) {
+            Log.i(TAG, "srvResume: " + t);
+            return null;
+        }
+    }
+
+    /** ★ v1.3.341：/v1/history 拉取结果 20s TTL 缓存。
+     *  r1web 页面每 8s load() 会打一次 /api/prog → prog_list → 这里同步 HTTP 拉服务端；
+     *  以前不缓存，服务端一慢整条链拖 2.5s（配合 player 旧版串行 accept 就是
+     *  「点暂停要过一会儿才起效」的元凶之一）。书级进度 20s 的陈旧度完全可接受。 */
+    private static volatile String sHistCache = null;
+    private static volatile long sHistCacheTs = 0L;
+
+    /** ★ v1.3.339：prog_list 输出前，用服务端书级共享进度（media server /v1/history
+     *  的 books 表）覆盖各条的 lastEp/lastPos —— 服务端是语音/网页/stem 全通道的
+     *  权威进度本，r1web「我的节目/最近播放」显示与点击续播都以它为准。
+     *  与服务端续播同口径：上一集 fin / 贴集尾 3s 内 ⇒ 显示成下一集开头。
+     *  网络失败 / 服务端不在 ⇒ 原样返回（行为与 1.3.338 一致）。 */
+    public static JSONArray srvSyncProg(JSONArray lst) {
+        try {
+            if (lst == null || lst.length() == 0) {
+                return lst;
+            }
+            String b = nasBase();
+            if (b == null || b.length() == 0) {
+                return lst;
+            }
+            String s;
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (sHistCache != null && now - sHistCacheTs < 20000L) {
+                s = sHistCache;                      // ★ v1.3.341：20s 内直接用缓存
+            } else {
+                // ★ 1.3.347：同样带 MAC —— 服务端据此只回本组设备的书级进度
+                String m = mac12();
+                s = httpGet(b + "/v1/history" + (m.length() > 0 ? ("?dev=" + m) : ""), 2500);
+                if (s != null && s.indexOf("\"books\"") >= 0) {
+                    sHistCache = s;
+                    sHistCacheTs = now;
+                }
+            }
+            if (s == null || s.indexOf("\"books\"") < 0) {
+                return lst;
+            }
+            JSONArray books = new JSONObject(s).optJSONArray("books");
+            if (books == null || books.length() == 0) {
+                return lst;
+            }
+            java.util.HashMap<String, JSONObject> map = new java.util.HashMap<String, JSONObject>();
+            for (int i = 0; i < books.length(); i++) {
+                JSONObject sb = books.optJSONObject(i);
+                if (sb == null) {
+                    continue;
+                }
+                String nm = normBookKey(sb.optString("book", ""));
+                String qk = normBookKey(sb.optString("q", ""));
+                if (nm.length() > 0) {
+                    map.put(nm, sb);
+                }
+                if (qk.length() > 0 && !map.containsKey(qk)) {
+                    map.put(qk, sb);
+                }
+            }
+            for (int i = 0; i < lst.length(); i++) {
+                JSONObject pe = lst.optJSONObject(i);
+                if (pe == null) {
+                    continue;
+                }
+                String pn = normBookKey(pe.optString("book", ""));
+                if (pn.length() == 0) {
+                    continue;
+                }
+                JSONObject sb = map.get(pn);
+                if (sb == null) {
+                    for (java.util.Map.Entry<String, JSONObject> e : map.entrySet()) {
+                        String k = e.getKey();
+                        if (k.length() >= 2 && pn.length() >= 2
+                                && (k.indexOf(pn) >= 0 || pn.indexOf(k) >= 0)) {
+                            sb = e.getValue();
+                            break;
+                        }
+                    }
+                }
+                if (sb == null) {
+                    continue;
+                }
+                int ep = sb.optInt("ep", 0);
+                int pos = (int) sb.optDouble("pos", 0);
+                int dur = (int) sb.optDouble("dur", 0);
+                boolean fin = sb.optBoolean("fin", false);
+                if (ep <= 0) {
+                    continue;
+                }
+                if (fin || (dur > 0 && pos >= dur - 3)) {
+                    ep = ep + 1;
+                    pos = 0;
+                }
+                pe.put("lastEp", ep);
+                pe.put("lastPos", Math.max(0, pos));
+                String t = sb.optString("title", "");
+                if (t.length() > 0) {
+                    pe.put("lastEpTitle", t);
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "srvSyncProg: " + t);
+        }
+        return lst;
+    }
+
+    /** ★ v1.3.339：书名归一化（小写 + 去空白），与服务端 bookKeyOf 同口径 */
+    private static String normBookKey(String s) {
+        if (s == null) {
+            return "";
+        }
+        return s.toLowerCase().replaceAll("\\s+", "");
+    }
+
     private static String abResume(JSONObject args) {
         String book = args == null ? "" : args.optString("book", "").trim();
         if (book.length() == 0) {
@@ -10099,6 +10693,33 @@ public final class PlayerBridge {
            并不保证包含要续播的集（实测「凡人修仙传」要续第1630集，返回页
            1504~1668 / 1514~1892 都不含 1630 ⇒ 老路径直接 "ERR 找不到可播的那一集"）。
            Prog 里是按集号精确的缓存/现拉页，集号不会错。 */
+        /* ★ v1.3.336 P1 书级共享：续播先问服务端书级进度（media server /v1/resume，
+           与 AlphaPi /ap/play ep=0 同源同口径，含「听完⇒下一集」）。命中 ⇒ 集号/位置
+           都采信服务端，并写回本地记忆（收藏书 Prog.setProgress、纯语音书
+           noteListenPos），下面现有链路原样生效 —— 换台设备也能接着听。
+           没命中/网络失败 ⇒ 完全走原本地逻辑，行为与 1.3.335 一致。 */
+        try {
+            JSONObject sr = srvResume(book);
+            if (sr != null) {
+                int sep = sr.optInt("ep", 0);
+                int spos = Math.max(0, sr.optInt("pos", 0));
+                if (sep > 0) {
+                    last = sep;
+                    JSONObject pbS = Prog.findByName(book);
+                    String paS = (pbS == null) ? "" : pbS.optString("albumId", "").trim();
+                    if (paS.length() > 0) {
+                        Prog.setProgress(paS, sep, spos);
+                    } else {
+                        noteListenPos(book, sep, spos);
+                    }
+                    Log.i(TAG, "abResume srv shared ep=" + sep + " pos=" + spos
+                            + (sr.optString("dev", "").length() > 0
+                                ? " (dev " + sr.optString("dev", "") + ")" : ""));
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "abResume srvResume: " + t);
+        }
         JSONObject pbe = Prog.findByName(book);
         String paid = (pbe == null) ? "" : pbe.optString("albumId", "").trim();
         if (paid.length() > 0 && last > 0) {
@@ -10114,12 +10735,12 @@ public final class PlayerBridge {
                     int lep2 = pbe.optInt("lastEp", 0);
                     int lp2 = pbe.optInt("lastPos", 0);
                     if (lp2 > 5 && (lep2 <= 0 || lep2 == last)) {
-                        ps = lp2 - 2;
+                        ps = lp2 - 10;   /* ★ v1.3.339：统一 10s（原 2s） */
                     }
                     if (ps <= 0) {
                         int l2 = lastListenPos(book, last);
                         if (l2 > 5) {
-                            ps = l2 - 2;
+                            ps = l2 - 10;   /* ★ v1.3.339：统一 10s */
                         }
                     }
                     if (ps > 0) {
@@ -10133,8 +10754,51 @@ public final class PlayerBridge {
             }
         }
         int size = abLoaderSize();
-        // v1.3.264：用 ep 参数定位包含 last 的页（last<=0 ⇒ 第1页）
-        JSONObject d = abEpisodes(book, album, 0, size, last > 0 ? last : 0);
+        /* ★ v1.3.345：本地库优先 —— 本地库（NAS /audiobook）有这本书就播本地版
+           （秒开、不走外网；与 v1.3.325 点播同口径，用户拍板「本地库有的话还是要
+           本地优先，本地库没用才播在线库」）。四级链：
+           ① 历史专辑就是 abl: → 直接取（活着的历史本地版本优先级天然最高）；
+           ② abl: 失效（本地库重扫换 id / 书删过又放回）→ 按书名重新找本地库；
+           ③ 历史是在线版但本地库现在有了 → 也切本地；
+           ④ 本地没有 / 本地集表拉不到（本地没用）→ 按历史专辑取在线；
+              仍失败 → 退专辑约束按书名搜在线（v1.3.344 兜底保留）。 */
+        JSONObject d = null;
+        String bNas = nasBase();
+        boolean triedAlbum = false;
+        if (album != null && album.startsWith("abl:") && bNas != null) {
+            triedAlbum = true;
+            d = abEpisodes(book, album, 0, size, last > 0 ? last : 0);
+            if (d == null) {
+                Log.i(TAG, "abResume abl id stale (" + album + "), re-find local by name");
+            }
+        }
+        if (d == null && bNas != null) {
+            JSONObject lbk = ablFind(bNas, book);
+            if (lbk != null) {
+                String lid = lbk.optString("id", "").trim();
+                if (lid.length() > 0) {
+                    d = ablEpsAsAb(bNas, lid, 1, size, last > 0 ? last : 0);
+                    if (d != null) {
+                        Log.i(TAG, "abResume local-first id=" + lid
+                                + " name=" + lbk.optString("title", ""));
+                    }
+                }
+            }
+        }
+        if (d == null && !triedAlbum && album != null && album.length() > 0) {
+            // v1.3.264：用 ep 参数定位包含 last 的页（last<=0 ⇒ 第1页）
+            d = abEpisodes(book, album, 0, size, last > 0 ? last : 0);
+        }
+        if (d == null && album != null && album.length() > 0) {
+            /* ★ v1.3.344：历史版本兜底 —— ab_ver_hist 里最新的版本可能是已不存在的
+               NAS 本地书（abl: 前缀；本地库清空后 /api/abl/eps 直接空回）或失效专辑，
+               这里一票否决成 "ERR 有声书数据源没应答"，小智就会报「有声书连不上」。
+               实测：凡人修仙传 hist 最新 = abl:（11-07 本地库播的），本地库已清空，
+               在线版 91699665 就在历史里但 ts 更旧 ⇒ 退掉 album 约束按书名再问一次，
+               服务端 abcache 按书名搜在线版几乎必中。 */
+            Log.i(TAG, "abResume eps fail (album=" + album + ")，retry q-only");
+            d = abEpisodes(book, "", 0, size, last > 0 ? last : 0);
+        }
         if (d == null) {
             return "ERR 有声书数据源没应答";
         }
@@ -10144,11 +10808,72 @@ public final class PlayerBridge {
         }
         int target = last > 0 ? last : 0;
         JSONObject e0 = abPick(eps, target);
+        /* ★ 1.3.359：本地库版本「集数不够」→ 退在线库，别把 ERR 甩给小智。
+           实测（11-19 22:20）：喊「继续播放凡人修仙传」回
+           ERR《凡人修仙传》找不到可播的那一集，小智转述成「找不到上次播放的记录」，
+           用户以为听书记忆丢了。真相：ab_loader_album 还指着本地库那本
+           （/audiobook 只有 3 集），正在播的是在线版第 6 集 —— target=6 在 3 集的
+           本地集表里当然 pick 不到。本地库拿不到目标集就换在线库问一次。 */
+        String preAlb = d.optString("albumId", "").trim();
+        boolean fromLocal = preAlb.startsWith("abl:")
+                || "abl".equals(d.optString("source", ""));
+        if (e0 == null && fromLocal) {
+            try {
+                /* 服务端 /api/ab/episodes 自身就是「files/ab_cache.json 永久缓存优先 →
+                   miss 才回源搜上游」，所以这一跳等于「缓存 → 在线」两级，
+                   响应里的 cache=disk|pinyin|search 就是实际命中的层级。 */
+                JSONObject d2 = abEpisodes(book, "", 0, size, target);
+                JSONArray e2 = (d2 == null) ? null : d2.optJSONArray("episodes");
+                JSONObject p2 = abPick(e2, target);
+                if (p2 != null) {
+                    Log.i(TAG, "abResume 本地库缺第 " + target + " 集（本地版共 "
+                            + eps.length() + " 集）→ 退缓存/在线（cache="
+                            + (d2 == null ? "?" : d2.optString("cache", "?")) + "，共 "
+                            + (e2 == null ? 0 : e2.length()) + " 集）");
+                    d = d2;
+                    eps = e2;
+                    e0 = p2;
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "abResume local->cache/online: " + t);
+            }
+        }
+        /* ★ 1.3.359：还 pick 不到（这本书任何版本都没有这一集 —— 多半是集号比
+           该版本总集数还大，比如换了短版本）→ 退到 ≤target 的最近一集，
+           仍然没有就第一集。宁可播一集并说明，也不要回「找不到记录」。 */
+        boolean epClamped = false;
+        if (e0 == null) {
+            int best = -1;
+            for (int i = 0; i < eps.length(); i++) {
+                JSONObject e = eps.optJSONObject(i);
+                int xep = (e == null) ? 0 : e.optInt("ep", 0);
+                if (xep > 0 && (target <= 0 || xep <= target) && xep > best) {
+                    best = xep;
+                    e0 = e;
+                }
+            }
+            if (e0 == null) {
+                e0 = abPick(eps, 0);
+            }
+            epClamped = (e0 != null);
+            if (epClamped) {
+                Log.i(TAG, "abResume target " + target + " 该版本没有 → 退到第 "
+                        + e0.optInt("ep", 0) + " 集");
+            }
+        }
         if (e0 == null) {
             return "ERR《" + book + "》找不到可播的那一集";
         }
         int[] rng = abPageRange(d);
-        abLoaderSave(book, album, d.optString("source", "kw"),
+        /* ★ v1.3.344：loader 专辑记**响应里的真 albumId**（q-only 兜底时 album 变量
+           可能还是过期的 abl:/失效值，照存会让 ab_next/ab_prev 接着踩同一个坑） */
+        String dalb = d.optString("albumId", "").trim();
+        if (dalb.length() == 0) {
+            dalb = album;
+        }
+        /* ★ v1.3.357：loader 书名也存**响应里的 book**（本地合集子书时是子书名），
+           ab_next/ab_prev 之后按这个名字续拉集表才对得上同一部。 */
+        abLoaderSave(d.optString("book", book), dalb, d.optString("source", "kw"),
                 d.optInt("page", 1), size, d.optInt("total", 0), rng[0], rng[1]);
         /* ★ v1.3.308：语音续播也要「从上次听到的秒数接着播」。
            以前 ab_resume 只负责把**集**对上（听第1630集），秒数一律从 0:00 起 ——
@@ -10166,7 +10891,8 @@ public final class PlayerBridge {
                 int lep = pe.optInt("lastEp", 0);
                 int lp = pe.optInt("lastPos", 0);
                 if (lp > 5 && (lep <= 0 || lep == e0.optInt("ep", 0))) {
-                    posSec = lp - 2;               // 往前推 2 秒，听感上接得住
+                    posSec = lp - 10;              /* ★ v1.3.339：统一 10s（原 2s）——
+                                                      与 stem / r1web 点播同一口径 */
                 }
             }
         } catch (Throwable t) {
@@ -10177,11 +10903,19 @@ public final class PlayerBridge {
         if (posSec <= 0) {
             int lp = lastListenPos(d.optString("book", book), e0.optInt("ep", 0));
             if (lp > 5) {
-                posSec = lp - 2;
+                posSec = lp - 10;   /* ★ v1.3.339：统一 10s */
             }
         }
+        /* ★ 1.3.359：集号被钳过就别再说「继续听第 6 集」（实际播的是第 3 集）——
+           直接说清「这版没有第 N 集，从第 M 集继续」，小智转述才不误导。 */
+        String hint = last > 0 ? "继续听 —— " : "继续听（从头开始）—— ";
+        if (epClamped) {
+            int tot = d.optInt("total", 0);
+            hint = "这版没有第 " + target + " 集（共 " + (tot > 0 ? tot : eps.length())
+                    + " 集）—— 从第 " + e0.optInt("ep", 0) + " 集继续 —— ";
+        }
         String r = abQueueBook(d.optString("book", book), d.optInt("total", 0), eps,
-                e0.optInt("ep", 0), last > 0 ? "继续听 —— " : "继续听（从头开始）—— ");
+                e0.optInt("ep", 0), hint);
         boolean queued = (r != null);
         if (!queued) {
             r = abStart(d.optString("book", book), e0);
@@ -10226,19 +10960,98 @@ public final class PlayerBridge {
             } catch (Throwable t) {
                 ep = 0;
             }
-            if (book.length() == 0) {
-                book = abSpGet("ab_loader_book", "");
-            }
             if (book.length() == 0 || ep <= 0) {
+                /* ★ 1.3.348：不再拿 ab_loader_book 兜底 —— 那是「上一本在线书」的全局残留，
+                   实测会把本地书《道诡异仙》记成《遮天》。认不出书名就不报，宁缺毋滥。 */
                 return null;
             }
-            return new String[]{book, String.valueOf(ep)};
+            /* ★ 1.3.350：上报统一用**短书名**（「丨」前第一段）。
+               源里的真名是「仙逆丨多人剧丨曲中人有故事丨动漫热播原著丨耳根丨完结」，
+               直接上报会和历史记录的「仙逆」变成两本书（书级区两条同名书）。
+               Prog.shortBook 是入列时给队列标题用的同一套规则，不是新猜法。
+               ★ 1.3.357：本地书例外 —— 书名是本地库的**子书名**（「黑暗森林Ⅱ」），
+               它本身就是权威书名，不再过 shortBook（避免带「·」的子书名被前段截掉）。 */
+            String url = rr.length > 2 && rr[2] != null ? rr[2] : "";
+            if (url.indexOf("/m/") >= 0) {
+                return new String[]{book, String.valueOf(ep)};
+            }
+            return new String[]{Prog.shortBook(book), String.valueOf(ep)};
         } catch (Throwable t) {
             return null;
         }
     }
 
-    /** ★ v1.3.309：记「这本书听到第几秒」（SP：ab_live_pos，与收藏无关，12h 过期）。
+    /**
+     * ★ 1.3.350：当前在播的是电台 → 台名；不是电台返 null。
+     *
+     * <p>为什么要单独一条路：广播的 URL 是上游直链（服务端 /radio/ 代理默认关），
+     * 媒体服务器**收不到任何拉流请求** ⇒ 播放记录里永远没有「在听广播」。书的
+     * 那套 /v1/pos 上报只认「标题含第 N 集」，电台全被 abLikely 挡掉。</p>
+     *
+     * <p>★ v1.3.352：判据从「itemId 前缀 100_radio_」改成 **URL 排除法**。
+     * 1.3.350 那个前缀是错的 —— 实测（2026-11-18 18:05，播「国际新闻」时抓
+     * player /api/queue）队列项是：</p>
+     * <pre>{"n":1,"title":"国际新闻","itemId":"local_1",
+     *  "url":"http://lhttp.qtfm.cn/live/20500172/64k.mp3","album":""}</pre>
+     * <p>{@code local_1} 是 {@link #playRadio} 走 {@code oneJson()} 入列的**通用 id**
+     * （同一个 id 也用于 play_url / 闹钟铃声），{@code 100_radio_<n>} 只出现在
+     * radioList 名册那条路径上。所以老判据对真实广播全落空，一条都没报上去。</p>
+     *
+     * <p>用 URL 认领才稳 —— 各类媒体的 URL 形态互斥：</p>
+     * <ul>
+     *   <li>本地文件/本地音乐：{@code file://} 或无 scheme 的路径 → 不是电台</li>
+     *   <li>本地节目（听书）：带 {@code /m/} → 不是电台</li>
+     *   <li>在线书/在线歌：带 {@code /r/} → 不是电台</li>
+     *   <li>服务端电台代理：带 {@code /radio/} → 是电台</li>
+     *   <li>剩下「外网 http(s) 直链」→ 直播流（蜻蜓/喜马拉雅/自定义台）</li>
+     * </ul>
+     */
+    public static String liveRadioNow() {
+        try {
+            JSONObject p = playerLiveQueue(0);
+            if (p == null) {
+                return null;
+            }
+            int cur = p.optInt("cur", -1);
+            JSONArray l = p.optJSONArray("list");
+            if (cur < 0 || l == null) {
+                return null;
+            }
+            for (int i = 0; i < l.length(); i++) {
+                JSONObject it = l.optJSONObject(i);
+                if (it == null || it.optInt("n", -1) != cur + 1) {
+                    continue;
+                }
+                String itemId = it.optString("itemId", "");
+                String url = it.optString("url", "").trim();
+                String t = it.optString("title", "").trim();
+                if (t.length() == 0 || url.length() == 0) {
+                    return null;
+                }
+                if (itemId.startsWith("abl_")) {          // 有声书队列，另有权威路径
+                    return null;
+                }
+                String u = url.toLowerCase();
+                if (u.startsWith("file://") || u.indexOf("/m/") >= 0) {
+                    return null;                          // 本地文件 / 本地节目
+                }
+                if (u.indexOf("/radio/") >= 0) {          // 服务端电台代理
+                    Log.i(TAG, "abNext radio(proxy) cur=" + cur + " name=" + t);
+                    return t;
+                }
+                if (u.indexOf("/r/") >= 0 || u.indexOf("://") < 0) {
+                    return null;                          // 在线流（歌/书）/ 非法地址
+                }
+                Log.i(TAG, "abNext radio cur=" + cur + " name=" + t + " url=" + url);
+                return t;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "liveRadioNow: " + t);
+        }
+        return null;
+    }
+
+    /** ★ 1.3.309：记「这本书听到第几秒」（SP：ab_live_pos，与收藏无关，12h 过期）。
      *  ★ v1.3.311：改成**按书一张小表**（最多 8 本）。以前只存一本，
      *  交叉听书（凡人→道诡异仙）后前一本的记忆被顶掉，
      *  再喊「继续听凡人」就变成 "继续听（从头开始）第1集"。 */
@@ -10406,11 +11219,9 @@ public final class PlayerBridge {
             } catch (Throwable t) {
                 ep = 0;
             }
-            if (book.length() == 0) {
-                // device 推的批才有书名；拿 loader 的记录兜底（同一本书时可信）
-                book = abSpGet("ab_loader_book", "");
-            }
             if (book.length() == 0 || ep <= 0) {
+                /* ★ 1.3.348：与 liveListenNow 同口径 —— 认不出书名就不写，
+                   绝不拿 ab_loader_book（上一本在线书）顶上。 */
                 return null;
             }
             String album = "";
@@ -10439,6 +11250,41 @@ public final class PlayerBridge {
         }
     }
 
+    /** ★ v1.3.349：轻量播放状态指纹 —— 给 ProgProgress 每 2 秒「起播感知」用。
+     *
+     *  <p>为什么不能直接用 /api/queue：那是**整张队列**（3374 集的书要序列化几百 KB），
+     *  2 秒一次会把 player 的 WebSrv 拖住。这里只读 /api/status 的 music 摘要
+     *  （实测约 4.6KB，queueBrief 只有 cur/total，不含列表）。</p>
+     *
+     * <p>指纹必须「同一次播放内稳定」：只由 曲名/曲目 id/是否播放中/位置是否已过 3 秒
+     *  组成。位置本身不进指纹，否则每 2 秒都算变化，等于白跑全量流程。</p>
+     *
+     * @return "" 表示 player 未就绪或没有当前曲（调用方应当不据此做判断）
+     */
+    public static String playerFingerprint() {
+        try {
+            String js = httpGet("http://127.0.0.1:8080/api/status", 1200, 262144, 2000);
+            if (js == null || js.length() == 0) {
+                return "";
+            }
+            JSONObject o = new JSONObject(js);
+            JSONObject m = o.optJSONObject("music");
+            if (m == null || m.optBoolean("stale", false)) {
+                return "";
+            }
+            String t = m.optString("curTitle", "");
+            if (t.length() == 0) {
+                return "";
+            }
+            long ms = m.optLong("posMs", 0);
+            return t + "|" + m.optString("curId", "") + "|"
+                    + (m.optBoolean("playing", false) ? "1" : "0") + "|"
+                    + (ms > 3000 ? "P" : "S");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     /** ★ v1.3.308：player 侧当前播放秒数（读它自己的 /api/status.music.posMs）。 */
     public static int playerPosSec() {
         try {
@@ -10458,8 +11304,258 @@ public final class PlayerBridge {
         }
     }
 
+    /** ★ v1.3.358：player /api/status 里的 music 摘要 —— 查进度 / 时长 / 相位共用一次 HTTP。
+     *
+     *  <p>只取 music 对象：posMs / durMs / playing / phase / liveStream 都在里面。
+     *  player 没起、或没在播（curTitle 空）时返回 null，调用方据此报「没在播」。</p>
+     */
+    public static JSONObject playerMusic() {
+        try {
+            String js = httpGet("http://127.0.0.1:8080/api/status", 1500, 262144, 2500);
+            if (js == null || js.length() == 0) {
+                return null;
+            }
+            JSONObject o = new JSONObject(js);
+            return o.optJSONObject("music");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** ★ v1.3.358：秒 → m:ss（超过 1 小时给 h:mm:ss）—— 念出来不拗口，和 player 页面同口径。 */
+    public static String fmtHms(long sec) {
+        if (sec < 0) {
+            sec = 0;
+        }
+        long h = sec / 3600;
+        long m = (sec % 3600) / 60;
+        long s = sec % 60;
+        String mm = (m < 10) ? ("0" + m) : String.valueOf(m);
+        String ss = (s < 10) ? ("0" + s) : String.valueOf(s);
+        return (h > 0) ? (h + ":" + mm + ":" + ss) : (m + ":" + ss);
+    }
+
+    /** ★ v1.3.358：进度一句话 —— 「已播到 12:30，共 25:10，还剩 12:40」。
+     *
+     *  <p>时长是 player 自己从播放器取的（durMs），不是我们估的：/m/ 与本地文件都有，
+     *  电台直播流（liveStream）没有总时长，如实说「拖不了」而不是编一个数。</p>
+     */
+    private static String progLine(JSONObject m) {
+        if (m == null) {
+            return "";
+        }
+        if (m.optString("curTitle", "").length() == 0) {
+            return "";
+        }
+        long pos = m.optLong("posMs", 0) / 1000L;
+        long dur = m.optLong("durMs", 0) / 1000L;
+        StringBuilder sb = new StringBuilder("已播到 ").append(fmtHms(pos));
+        if (dur > 0) {
+            sb.append("，共 ").append(fmtHms(dur))
+              .append("，还剩 ").append(fmtHms(Math.max(0, dur - pos)));
+        } else {
+            sb.append("（这个音源没有总时长，拖不了进度）");
+        }
+        String ph = m.optString("phase", "");
+        if ("loading".equals(ph)) {
+            sb.append("（正在缓冲）");
+        } else if ("stalled".equals(ph)) {
+            sb.append("（缓冲中，可能没出声）");
+        } else if (!m.optBoolean("playing", false)) {
+            sb.append("（已暂停）");
+        }
+        return sb.toString();
+    }
+
+    /** ★ v1.3.358：「这集多长 / 放了多久 / 还剩多久」—— 只查不跳。 */
+    public static String progressText() {
+        JSONObject m = playerMusic();
+        if (m == null || m.optString("curTitle", "").length() == 0) {
+            return "ERR 现在没有在播的内容";
+        }
+        StringBuilder sb = new StringBuilder("OK ");
+        /* 有声书把书名/集号带上，否则只说「已播到 3:20」模型不知道是哪一集 */
+        String[] nr = liveNowRow();
+        if (nr != null && nr.length >= 2) {
+            sb.append("《").append(nr[0]).append("》第 ").append(nr[1]).append(" 集，");
+        } else {
+            String t = m.optString("curTitle", "");
+            sb.append("《").append(t).append("》，");
+        }
+        sb.append(progLine(m));
+        return sb.toString();
+    }
+
+    /** ★ v1.3.358：语音调进度 —— sec 绝对秒 / delta 相对秒（正快进 负后退）/ 都不传 = 只查。
+     *
+     *  <p>落到 player 的 {@code /api/act?op=seek&ms=}（pl-1.6.12 起那条 smali 补的
+     *  事务 0x15，能真拖本地播放器）。可行性由 player 自己把关：非本地播放态、
+     *  远程源、服务没绑上都会回 ok=false + 中文原因，这里原样转给模型。</p>
+     */
+    public static String seekPlay(JSONObject args) {
+        int sec = -1;
+        int delta = 0;
+        if (args != null) {
+            sec = args.optInt("sec", -1);
+            if (sec < 0) {
+                sec = args.optInt("to", -1);
+            }
+            delta = args.optInt("delta", 0);
+            if (delta == 0) {
+                delta = args.optInt("by", 0);
+            }
+        }
+        JSONObject m = playerMusic();
+        if (m == null || m.optString("curTitle", "").length() == 0) {
+            return "ERR 现在没有在播的内容，没法跳进度";
+        }
+        if (sec < 0 && delta == 0) {
+            return progressText();          // 只问进度，不跳
+        }
+        if (m.optBoolean("liveStream", false)) {
+            return "ERR 这是电台直播流，没有终点，拖不了进度";
+        }
+        long pos = m.optLong("posMs", 0) / 1000L;
+        long dur = m.optLong("durMs", 0) / 1000L;
+        /* ★ 实测（1.3.358 首次装机）：网络电台的 liveStream/qRadio **都是 false**
+           —— player 的 isRadio 只认它自己解析出「无长度流」的那一步，起播瞬间拿不到。
+           但 durMs 恒为 0，所以「没总时长 = 拖不了」才是可靠判据（直播流、以及
+           刚起播还没读出时长的本地文件都落在这一条）。 */
+        if (dur <= 0) {
+            return "ERR 这一条暂时没有总时长（直播流，或刚起播还没读出来），拖不了进度";
+        }
+        long target = (sec >= 0) ? sec : (pos + delta);
+        if (dur > 0 && target > dur - 2) {
+            target = Math.max(0, dur - 2);  // 别拖到片尾（拖到底会直接跳下一集）
+        }
+        if (target < 0) {
+            target = 0;
+        }
+        String r;
+        try {
+            r = httpGet("http://127.0.0.1:8080/api/act?op=seek&ms=" + (target * 1000L), 3000);
+        } catch (Throwable t) {
+            return "ERR 跳转请求发不出去：" + t;
+        }
+        try {
+            JSONObject o = new JSONObject(r == null ? "" : r);
+            if (!o.optBoolean("ok", false)) {
+                String msg = o.optString("msg", "");
+                return "ERR " + (msg.length() > 0 ? msg : "播放器拒绝跳转（可能没在本地播放态）");
+            }
+        } catch (Throwable ignored) {
+            /* player 回的不是 JSON 就当成功往下走，后面用 status 复核 */
+        }
+        String tail = (dur > 0)
+                ? ("，共 " + fmtHms(dur) + "，还剩 " + fmtHms(Math.max(0, dur - target)))
+                : "";
+        SessionLog.i("seek_play: " + pos + "s -> " + target + "s (sec=" + sec
+                + " delta=" + delta + ")");
+        return "OK 已跳到 " + fmtHms(target) + tail;
+    }
+
     private static String httpGet(String url, int timeoutMs) throws Exception {
         return httpGet(url, timeoutMs, 8 * 1024 * 1024, 20000);
+    }
+
+    /** ★ v1.3.342：设备 MAC（wlan0，12 位大写无分隔；与服务端 devIdOf 归一化同口径）。
+     *  读不到（飞行模式/接口名不同）返回 ""，调用方降级不带 devId（服务端退 ip-<地址>）。 */
+    private static volatile String sMac12 = "";
+
+    public static String mac12() {
+        if (sMac12.length() > 0) {
+            return sMac12;
+        }
+        try {
+            java.io.FileInputStream f = new java.io.FileInputStream("/sys/class/net/wlan0/address");
+            byte[] b = new byte[64];
+            int n = f.read(b);
+            f.close();
+            String s = new String(b, 0, Math.max(0, n), "UTF-8").trim();
+            StringBuilder o = new StringBuilder();
+            for (int i = 0; i < s.length() && o.length() < 12; i++) {
+                char ch = s.charAt(i);
+                if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+                    o.append(Character.toUpperCase(ch));
+                }
+            }
+            if (o.length() >= 8) {
+                sMac12 = o.toString();
+            }
+        } catch (Throwable ignored) {
+        }
+        return sMac12;
+    }
+
+    /** ★ v1.3.342：POST JSON（/v1/pos 专用，小超时，只关心发得出去、不解析响应体）。 */
+    private static void httpPostJson(String url, String json, int timeoutMs) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        try {
+            c.setRequestMethod("POST");
+            c.setConnectTimeout(timeoutMs);
+            c.setReadTimeout(timeoutMs);
+            c.setDoOutput(true);
+            c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            byte[] b = json.getBytes("UTF-8");
+            c.setFixedLengthStreamingMode(b.length);
+            java.io.OutputStream os = c.getOutputStream();
+            os.write(b);
+            os.flush();
+            os.close();
+            int code = c.getResponseCode();
+            if (code >= 400) {
+                throw new Exception("HTTP " + code + " for " + url);
+            }
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    /**
+     * ★ v1.3.342 P1 收尾：把 r1web 回写的进度上报媒体服务器 /v1/pos。
+     *   直链播放（/r/）的「起播事实」记录由此补上真实位置；书级共享表同时更新，
+     *   stem 等其它设备「继续听」从此能吃到 R1 的进度（此前 R1 只读不写，双向断一半）。
+     *   book 名从 Prog 缓存按 albumId 反查（r1web 只传 albumId/ep/pos）。
+     *   失败静默（打日志），绝不影响 prog_setpos 主流程；调用方已在后台线程。
+     */
+    public static void progPosReport(String albumId, int ep, int pos) {
+        try {
+            if (albumId == null || albumId.length() == 0 || ep <= 0 || pos <= 0) {
+                return;
+            }
+            String b = nasBase();
+            if (b == null || b.length() == 0) {
+                return;
+            }
+            String book = "";
+            JSONArray ls = Prog.list();
+            for (int i = 0; ls != null && i < ls.length(); i++) {
+                JSONObject it = ls.optJSONObject(i);
+                if (it != null && albumId.equals(it.optString("albumId", "").trim())) {
+                    book = it.optString("book", "").trim();
+                    break;
+                }
+            }
+            if (book.length() == 0) {
+                return;
+            }
+            JSONObject o = new JSONObject();
+            String mac = mac12();
+            if (mac.length() > 0) {
+                o.put("devId", mac);
+                o.put("devName", "R1-" + mac.substring(Math.max(0, mac.length() - 4)));
+            }
+            o.put("kind", "book");
+            o.put("q", book);
+            o.put("book", book);
+            o.put("ep", ep);
+            o.put("pos", pos);
+            o.put("fin", false);
+            httpPostJson(b + "/v1/pos", o.toString(), 2500);
+            Log.i(TAG, "progPosReport " + book + " ep=" + ep + " pos=" + pos);
+        } catch (Throwable t) {
+            Log.w(TAG, "progPosReport: " + t);
+        }
     }
 
     /** v1.3.116：可指定字节上限与总耗时上限（拉 index.json 用更紧的档位）。 */

@@ -109,6 +109,24 @@ public final class Bt {
     /** ★ pl-1.6.21：有没有向系统要过 proxy（掉了会置回 false，允许再要）。 */
     private static volatile boolean proxyAsked;
 
+    /* ---- pl-1.6.150：蓝牙氛围灯兜底链（原厂 lightId 255）----
+       原厂 EchoService 的 EasyPlayer 在 enterBusy 时发 255、离开时关 255；
+       conf 里 255 = SYNC open color CYAN（淡青蓝），251 是 BLUE 1414ff（深蓝）。
+       11-08 14:47 实测：A2DP 已 Connected 且在放歌，但那次没 enterBusy，
+       原厂全程没发 requestLightEffect ⇒ 底部环全黑。故按 A2DP 连接态兜底。
+       灯效本身仍由原厂灯效服务跑，不新做灯效、不接管灯、页面无设置项。 */
+    /** 原厂蓝牙氛围灯的效果 id（255 = CYAN 淡青蓝常亮）。 */
+    private static final int BT_LIGHT_ID = 255;
+    /** 轮询间隔：广播只做即时触发，最终以轮询为准（ACL 先连、profile 后连）。 */
+    private static final long BT_LIGHT_TICK_MS = 1200L;
+    private static volatile boolean sBtLightInit = false;
+    /** 上次判定的 A2DP 连接态。 */
+    private static volatile boolean sBtLightLast = false;
+    /** 最近一次动作的结果，排障用。 */
+    private static volatile String sBtLightMsg = "未初始化";
+    /** 已发出的报文条数（用来区分「首次同步」与「状态翻转」）。 */
+    private static volatile long sBtLightSends = 0;
+
     /** {@link #sinkAt} 的缓存有效期；再长就有引用失效风险，再短则每次都反射。 */
     private static final long SINK_TTL_MS = 10_000L;
 
@@ -321,6 +339,9 @@ public final class Bt {
                         // ★ pl-1.6.4：开适配器后落到 21（可连不可发现）；
                         // 若此刻开放窗口还没到期才给 23 继续等
                         applyDiscPref();
+                    } else if (st == BluetoothAdapter.STATE_OFF) {
+                        /* pl-1.6.150：整个蓝牙关掉 ⇒ A2DP 必然断开，把 255 收掉。 */
+                        syncBtLight();
                     }
                 } else if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(act)) {
                     /* ★ pl-1.6.4：「连上就自动关闭」—— 窗口开放期间只要有设备
@@ -332,11 +353,126 @@ public final class Bt {
                     if (discEnd != 0) {
                         closeDisc("设备已连上（" + ad + "）");
                     }
+                    /* pl-1.6.149：立刻重判一次；ACL 先连、profile 后连也没关系，
+                       1.2s 的轮询会补上那一次 show 255。 */
+                    syncBtLight();
+                } else if (BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(act)) {
+                    BluetoothDevice d = i.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    Boot.log("bt: 设备断开 " + (d == null ? "?" : d.getAddress()));
+                    syncBtLight();
                 }
             } catch (Throwable t) {
                 Boot.log("bt recv: " + t);
             }
         }
+    }
+
+    /* ---------------- pl-1.6.150：蓝牙氛围灯兜底（原厂 255） ---------------- */
+
+    /**
+     * A2DP sink 此刻有没有设备连着。
+     *
+     * <p>两条判据并用：① 适配器的 {@code getProfileConnectionState(11)}（隐藏 API，
+     * 反射拿）；② 借来的 {@link BluetoothA2dpSink} 代理的已连设备表。任一条说连着
+     * 就算连着 —— 原厂代理偶尔借不到，单靠一条会漏判成「断开」。</p>
+     */
+    public static synchronized boolean a2dpConnected() {
+        try {
+            BluetoothAdapter a = ad();
+            if (a != null && a.isEnabled()) {
+                Method m = BluetoothAdapter.class.getMethod(
+                        "getProfileConnectionState", int.class);
+                Object r = m.invoke(a, Integer.valueOf(A2DP_SINK));
+                // BluetoothProfile.STATE_CONNECTED = 2
+                if (r instanceof Integer && ((Integer) r).intValue() == 2) {
+                    return true;
+                }
+            }
+        } catch (Throwable t) {
+            // 隐藏 API 拿不到就走下面那条
+        }
+        try {
+            BluetoothA2dpSink sk = ensureSink();
+            if (sk != null) {
+                List<BluetoothDevice> cs = sk.getConnectedDevices();
+                if (cs != null && !cs.isEmpty()) {
+                    return true;
+                }
+            }
+        } catch (Throwable t) {
+            // ignore
+        }
+        return false;
+    }
+
+    /** 由 {@link Boot#attach} 调一次，启动轮询（幂等）。广播只做即时触发。 */
+    public static synchronized void initBtLight() {
+        if (sBtLightInit) {
+            return;
+        }
+        sBtLightInit = true;
+        Thread t = new Thread(new Runnable() {
+            public void run() {
+                while (true) {
+                    try {
+                        Thread.sleep(BT_LIGHT_TICK_MS);
+                    } catch (InterruptedException ie) {
+                        return;
+                    }
+                    try {
+                        syncBtLight();
+                    } catch (Throwable t2) {
+                        // 拿不到蓝牙状态也别把线程带死
+                    }
+                }
+            }
+        }, "r1web-btlight");
+        t.setDaemon(true);
+        t.start();
+        Boot.log("bt: 蓝牙氛围灯兜底链已启动（原厂 255）");
+    }
+
+    /** 立即重判一次；真正的 HTTP 在后台线程发，不占 onReceive 的主线程。 */
+    public static void syncBtLight() {
+        boolean conn;
+        try {
+            conn = a2dpConnected();
+        } catch (Throwable t) {
+            return;
+        }
+        applyBtLight(conn);
+    }
+
+    private static synchronized void applyBtLight(final boolean conn) {
+        if (sBtLightSends > 0 && conn == sBtLightLast) {
+            return;                         // 状态没变，别反复打扰灯效服务
+        }
+        if (sBtLightSends == 0 && !conn) {
+            /* 开机时蓝牙没连：不发 close，免得无谓清一次别人的灯。 */
+            return;
+        }
+        sBtLightLast = conn;
+        sBtLightSends++;
+        new Thread(new Runnable() {
+            public void run() {
+                /* 复用 device 现成的灯效调试口：原厂 R1Lights 里 ON=0 / OFF=1，
+                   send(255,0) = show 255（A 组淡青蓝常亮），send(255,1) = close 255。 */
+                String body = "op=light&v=raw:" + BT_LIGHT_ID + ":"
+                        + (conn ? "0" : "1");
+                String r = Proxy.post("/api/act", body, 4000);
+                sBtLightMsg = (conn ? "show 255（淡青蓝常亮）" : "close 255")
+                        + " → " + (r == null ? "8088 无响应" : "ok");
+                Boot.log("bt: " + sBtLightMsg);
+            }
+        }, "r1web-btlight-send").start();
+    }
+
+    /** 诊断串（{@code /api/status} 的 btLight / {@code op=btlight&v=probe}）。 */
+    public static String btLightState() {
+        return "connected=" + sBtLightLast
+                + " sends=" + sBtLightSends
+                + " last=" + sBtLightMsg
+                + " | 连上=show255 断开=close255";
     }
 
     /* ---------------- 状态 ---------------- */

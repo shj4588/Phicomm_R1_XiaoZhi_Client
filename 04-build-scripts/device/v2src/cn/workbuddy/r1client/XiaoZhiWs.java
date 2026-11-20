@@ -58,6 +58,8 @@ public final class XiaoZhiWs {
     private static final String LIGHT_PREFIX = "self.r1light.";
     /** v1.3.245：闹钟（调度在 device 进程，所以工具也挂在 device 的 WS 上） */
     private static final String ALARM_PREFIX = "self.r1alarm.";
+    /** v1.3.330：会话控制（「退下 / 安静」⇒ 真正退出 LISTENING） */
+    private static final String SESSION_PREFIX = "self.r1session.";
 
     /** 官方服务器（同 C3 固件）。可被 OTA 下发的 websocket.url 覆盖 */
     private static final String WS_URL = "wss://api.tenclass.net/xiaozhi/v1/";
@@ -106,6 +108,8 @@ public final class XiaoZhiWs {
     /** 二进制帧日志只打前 2 条（TTS 音频每 60ms 一帧，全打会把日志冲爆） */
     private int binLogged;
     private volatile boolean helloDone;
+    /** v1.3.330：「退下」是否已排队（MCP 工具与 STT 兜底可能同时命中，只收一次） */
+    private volatile boolean quitPending = false;
     private long reconnectBackoff = 1000L;
     private int idleCloseSeq;
     /**
@@ -460,11 +464,12 @@ public final class XiaoZhiWs {
                 JSONArray tools = new JSONArray();
                 addLightTools(tools);
                 addAlarmTools(tools);
+                addSessionTools(tools);
                 JSONObject result = new JSONObject();
                 result.put("tools", tools);
                 sendMcpResult(id, result);
                 SessionLog.i("-> mcp tools/list: " + tools.length()
-                        + " tools (自定义音乐库已关闭 ⇒ 灯控 + 闹钟)");
+                        + " tools (自定义音乐库已关闭 ⇒ 灯控 + 闹钟 + 会话)");
             } catch (Throwable t) {
                 Log.e(TAG, "sendMcpToolsResult(light only) threw", t);
             }
@@ -515,8 +520,15 @@ public final class XiaoZhiWs {
             tools.put(tool("play_url", "播放一个**用户明确给出的**完整音频网址（http/https）。⚠️ 只有用户真的念出了/给出了完整网址时才用；**不要自己猜测或拼造网址**。要播电台请用 play_radio（传电台名），要播库里的歌用 play_song。",
                     prop("url", "string", "完整的 http/https 音频地址")));
 
-            tools.put(tool("status", "查询音箱**当前是不是在放歌、放的是哪一首**。用户问「现在放的什么歌」「在放吗」「暂停一下」「声音关小点」这类问题**先查这个**，不要凭空回答。返回里有两项：**本地记录**（音箱自己的播放记录，重启后仍保留）和 DLNA状态（外部控制通道看到的状态）。★ 只要「本地记录=在播」就说明**确实在放**，即使 DLNA 状态是 NO_MEDIA_PRESENT / STOPPED，也**绝对不要**说「没在播」「播放列表为空」——DLNA 状态经常不同步（音箱自己起播时尤为如此）。两项都说没在播，才是真的没在播。",
+            tools.put(tool("status", "查询音箱**当前是不是在放歌、放的是哪一首**。用户问「现在放的什么歌」「在放吗」「暂停一下」「声音关小点」这类问题**先查这个**，不要凭空回答。返回里有两项：**本地记录**（音箱自己的播放记录，重启后仍保留）和 DLNA状态（外部控制通道看到的状态），并且**带进度**（已播到几分几秒 / 这一集共多长 / 还剩多久）。★ 只要「本地记录=在播」就说明**确实在放**，即使 DLNA 状态是 NO_MEDIA_PRESENT / STOPPED，也**绝对不要**说「没在播」「播放列表为空」——DLNA 状态经常不同步（音箱自己起播时尤为如此）。两项都说没在播，才是真的没在播。★ 只想知道「这集多长 / 还剩多久 / 放了几分钟」用 seek_play（不传参数）更快，它也答进度。",
                     null));
+
+            /* ★ v1.3.358：进度 / 跳转 —— 与 stem 固件的 self.stem.seek_play 同一套语义
+               （sec 绝对秒 / delta 相对秒 / 都不传只查），用户「快进 30 秒」「跳到第 12 分钟」
+               「这集还剩多久」都落在这一个工具上，模型不用在 status 里自己算时间。 */
+            tools.put(tool("seek_play", "查询 / 调节**当前播放进度** —— 前进、后退、直接跳到第几秒。用户说「快进 30 秒」「后退 5 分钟」「跳到第 12 分钟」「从 3 分 20 秒开始」「倒回去一点」时用；问「这集多长」「还剩多久」「放了多久」也用它（不传参数）。★ 三种用法：① **sec** = 绝对秒数（「跳到第 12 分钟」⇒ sec=720，「跳到 3 分 20 秒」⇒ sec=200）；② **delta** = 相对秒数（「快进 30 秒」⇒ delta=30，「后退 2 分钟」⇒ delta=-120）；③ **两个都不传 = 只查进度**，回「已播到 X，共 Y，还剩 Z」。★ 进度是按**当前这一集 / 这一首**算的：要换集请用 ab_play（传 ep），要换歌用 next / play_song。★ 网络电台是直播流，没有终点，拖不了 —— 会返回错误，这时如实告诉用户电台不能拖进度。",
+                    props(prop("sec", "integer", "绝对秒数：跳到第 N 秒（「跳到第 12 分钟」= 720，「跳到 3 分 20 秒」= 200）"),
+                            prop("delta", "integer", "相对秒数：正数快进、负数后退（「快进 30 秒」= 30，「后退 5 分钟」= -300）"))));
 
             tools.put(tool("fav_add", "把歌**加入收藏**。用户说「收藏这首歌」「我喜欢这首歌」「这首歌不错」「加入收藏」「加进我喜欢」「这首歌好听，存下来」「收藏一下」——只要是**对当前在放的这首歌表示喜欢**，就用这个。★ **不传参数 = 收藏当前正在播放的那一首**（绝大多数情况就是它）；只有用户明确点名了**另一首**歌（「把《晴天》加进收藏」）才传 title。⚠️ 这收的是**歌**：用户说的是「收藏这本书」「收藏这个节目」这类（在播有声书/节目）就改用 prog_addcur。",
                     props(prop("title", "string", "可选：要收藏的歌名；**不填 = 收藏当前正在播放的那首**"),
@@ -554,11 +566,13 @@ public final class XiaoZhiWs {
 
             addLightTools(tools);
             addAlarmTools(tools);
+            addSessionTools(tools);
 
             JSONObject result = new JSONObject();
             result.put("tools", tools);
             sendMcpResult(id, result);
-            SessionLog.i("-> mcp tools/list: " + tools.length() + " tools (r1player dlna + r1light + r1alarm)");
+            SessionLog.i("-> mcp tools/list: " + tools.length()
+                    + " tools (r1player dlna + r1light + r1alarm + r1session)");
         } catch (Throwable t) {
             Log.e(TAG, "sendMcpToolsResult threw", t);
         }
@@ -645,6 +659,24 @@ public final class XiaoZhiWs {
                 props(prop("v", "integer", "音量百分比 20~100，推荐 50；不传 = 只查询"))));
     }
 
+    /**
+     * v1.3.330：会话控制工具 —— 「退下 / 安静」必须真退出，不能只是回一句「好的」。
+     *
+     * <p>以前云端听到「退下」只回一句客气话，客户端仍停在 LISTENING 继续上行，
+     * 服务器 VAD 一检测到人声又开口搭话（用户原话：「过一会儿又开始和我说话了」）。
+     * 这里把「结束对话」显式做成工具，让模型有办法把这个动作落到设备上。</p>
+     *
+     * <p>v1.3.331：用户实测「你先退下吧 / 你可以下线了 / 你下线吧 / 再见小智 /
+     * 你下班吧 / 不用你了」这些口语化说法不容易触发 —— 模型常把它们当成普通寒暄回了句话，
+     * 不调工具。这里把整组告别/遣散说法**逐条写进工具描述**，并明确「不用你了」与
+     * 回答式「不用了」的区别；本地 STT 兜底词表同步扩充（见 isQuitCommand）。</p>
+     */
+    private void addSessionTools(JSONArray tools) throws Exception {
+        tools.put(tool(SESSION_PREFIX, "quit",
+                "**结束本轮对话、让音箱真正退下**。用户说以下任意一种话时，**必须调用这个工具**，不能只回一句「好的」「那我不打扰了」就算完 —— 只回话不调工具，设备会一直保持聆听、继续收音，过一会儿又会开口搭话。① 直接遣散：「退下」「你先退下吧」「安静」「别说了」「不要说话」「闭嘴」「别吵」「休息吧」「你先休息」「别打扰我」「停止对话」「结束对话」「别理我」「先这样」「就这样」；② 下线/下班：「你可以下线了」「你下线吧」「下线」「你下班吧」「下班」「你先下去吧」；③ 告别：「再见小智」「再见」「拜拜」「回见」；④ 不用你了：「不用你了」「不用你啦」「不用你小智」。⚠️ ②③④ 虽然不是标准「退下」，但语义都是让用户结束对话，**一律按退下处理**。调用后设备立即收掉本轮会话：停止麦克风上行、退出聆听状态、关闭连接、熄灭拾音灯；直到用户**再次喊唤醒词**才会重新开始对话。⚠️ 这不是静音、不是暂停音乐、也不是关闹钟，不要用 self.r1player.pause / stop 代替。⚠️ 不要调用的情况：用户只是在问问题、点歌、聊天中途停顿，或说**孤立的回答式**短语「不用了」「没事」「不用了谢谢」（注意与「不用你了」区分：后者明确是让助手退下，必须调用）。不需要传参数。",
+                null));
+    }
+
     private static JSONObject prop(String name, String type, String desc) throws Exception {
         JSONObject p = new JSONObject();
         p.put("type", type);
@@ -699,6 +731,15 @@ public final class XiaoZhiWs {
             // v1.3.245：闹钟与 web 的 /api/act?op=alarm_* 走同一个 Alarm.mcp 入口
             ret = Alarm.mcp(name.substring(ALARM_PREFIX.length()), args);
             isError = ret.startsWith("ERR");
+        } else if (name.startsWith(SESSION_PREFIX)) {
+            // v1.3.330：「退下」—— 复用 60s 自动断开那条 ws.close -> enterIdle 收尾路径
+            if ("quit".equals(name.substring(SESSION_PREFIX.length()))) {
+                ret = requestQuit("mcp:" + (args == null ? "" : args.optString("reason", "")));
+                isError = false;
+            } else {
+                isError = true;
+                ret = "unknown session tool: " + name;
+            }
         } else {
             isError = true;
             ret = "unknown tool: " + name;
@@ -777,6 +818,11 @@ public final class XiaoZhiWs {
                 main.post(new Runnable() {
                     public void run() {
                         listener.onStt(t);
+                        // v1.3.330：云端不一定会把「退下」映射到 MCP 工具，
+                        // 本地对高置信度短语兜一道，保证真的退出 LISTENING。
+                        if (isQuitCommand(t)) {
+                            requestQuit("stt:" + t);
+                        }
                     }
                 });
             } else if ("hello".equals(type)) {
@@ -805,6 +851,94 @@ public final class XiaoZhiWs {
         } catch (Throwable t) {
             Log.e(TAG, "handleText parse error", t);
         }
+    }
+
+    /**
+     * v1.3.330：「退下 / 安静」⇒ 复用「60s 自动断开」那条收尾路径。
+     *
+     * <p>60s 到点做的是 {@code ws.close("no-tts-timeout")} → onClosed →
+     * {@code SessionController.enterIdle()}（撤掉所有计时器、清 pending 上行、
+     * 灭拾音灯、setState(IDLE)）。这里只是把「等 60 秒」换成「立刻」，
+     * 不另造一套退出逻辑，收尾行为与自动断开逐字一致。</p>
+     *
+     * <p>延迟 600ms 是为了让 MCP result / 在途 STT 正常发完再关连接；
+     * {@code quitPending} 保证 MCP 工具与 STT 兜底同时命中时只收一次。</p>
+     */
+    private String requestQuit(String why) {
+        if (quitPending) {
+            return "OK 已在退下（重复触发已忽略）";
+        }
+        quitPending = true;
+        // 不额外屏蔽 KWS：设备本来就是「只有命中唤醒词才激活」，
+        // 回到 IDLE 后麦克风只喂 KWS、不再上行；强行静默反而会让用户
+        // 退下后马上喊「小智小智」叫不醒。已有的 WAKEUP_DEBOUNCE_MS 挡重复命中即可。
+        String reason = why == null ? "" : why;
+        if (reason.length() > 24) {
+            reason = reason.substring(0, 24);   // WebSocket close reason 上限 123 字节
+        }
+        final String safeReason = reason;
+        Log.i(TAG, "quit requested (" + safeReason + ") -> closing session in 600ms");
+        SessionLog.i("quit requested (" + safeReason + ") -> reuse 60s auto-disconnect path");
+        main.postDelayed(new Runnable() {
+            public void run() {
+                quitPending = false;
+                close("user-quit:" + safeReason);
+            }
+        }, 600L);
+        return "OK 已退出聆听状态，等待下次唤醒";
+    }
+
+    /**
+     * 本地 STT 兜底：只认高置信度的「退下 / 下线 / 告别」类短句。
+     * 云端未必会把这类命令映射到 MCP 工具，所以本地再兜一道；
+     * 但必须挡住「安静一点的歌」「把音量关小」「网络怎么下线了」这类
+     * 其实在点歌/调音量/问问题的句子。
+     *
+     * <p>v1.3.331 口令扩充（用户原话：「现在这些还是难触发」）：
+     * 「你先退下吧」「你可以下线了」「你下线吧」「再见小智」「你下班吧」「不用你了」。
+     * 原词表只有「退下 / 安静 / 休息」这一族，「下线 / 下班 / 再见 / 不用你」全都不认；
+     * 且 12 字上限会把 ASR 常带出来的「小智小智，……」前缀挤掉。这里补齐词表、
+     * 上限放宽到 16 字，同时给疑问句/内容句加一层 blockers，避免放宽后长句误伤。</p>
+     */
+    private static boolean isQuitCommand(String raw) {
+        if (raw == null) {
+            return false;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (Character.isLetterOrDigit(c)) {
+                sb.append(c);
+            }
+        }
+        String t = sb.toString().toLowerCase();
+        if (t.length() == 0 || t.length() > 16) {
+            return false;
+        }
+        String[] blockers = {"音量", "声音大", "声音小", "歌", "音乐", "播放", "灯",
+                "闹钟", "天气", "新闻", "收藏", "定时", "几点", "下一首", "打开", "关闭",
+                // v1.3.331：长度放宽后，疑问句 / 内容句先挡掉，别让长句蹭到关键词
+                "怎么", "什么", "为什么", "多少", "几首", "帮我", "请问", "是不是",
+                "能不能", "可以吗", "讲个", "说个", "查一下", "设置", "翻译", "网络",
+                // 「不用你提醒」「你下班了吗」这类回答/疑问也要挡掉
+                "提醒", "不用你说", "吗", "什么呢"};
+        for (int i = 0; i < blockers.length; i++) {
+            if (t.contains(blockers[i])) {
+                return false;
+            }
+        }
+        String[] words = {"退下", "安静", "闭嘴", "别说了", "不要说了", "别说话", "不要说话",
+                "住口", "别吵", "休息吧", "你休息", "先休息", "休息一下", "别打扰",
+                "不要打扰", "停止对话", "结束对话", "结束会话", "别理我", "不用理我",
+                // v1.3.331 新增：下线 / 下班 / 告别 / 不用你了，以及口语尾巴
+                "下线", "下班", "再见", "拜拜", "回见", "不用你", "下去吧",
+                "退下吧", "下线吧", "下班吧", "先这样", "就这样"};
+        for (int i = 0; i < words.length; i++) {
+            if (t.contains(words[i])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private OkHttpClient getClient() {

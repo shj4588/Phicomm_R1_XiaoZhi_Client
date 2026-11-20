@@ -56,10 +56,12 @@ public final class TopKey {
             // 否则音乐播放态切换
             if (PlayerBridge.isSoftPlaying()) {
                 PlayerBridge.pauseMusic();
+                MusicResume.noteUserPause();   // ★ v1.3.341：实体键暂停也是显式意图 ⇒ 小智说完话不自动恢复
                 Log.i(TAG, "单击：音乐在播 → 暂停");
                 notifyPlayer("toppause");   // pl-1.6.92：player 记「用户暂停」+ 推 SSE
             } else {
                 PlayerBridge.resumeMusic();
+                MusicResume.noteUserPlay();    // ★ v1.3.341：实体键恢复 ⇒ 清暂停标记，下一轮让路照常
                 Log.i(TAG, "单击：音乐暂停/空闲 → 继续播放");
                 notifyPlayer("topresume");  // pl-1.6.92：清暂停记账 + 推 SSE
             }

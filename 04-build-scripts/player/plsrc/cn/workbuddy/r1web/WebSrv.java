@@ -116,22 +116,48 @@ public final class WebSrv {
             Boot.log("bind " + port + " 失败: " + t);
             return;
         }
+        /* ★ pl-1.6.157：改**每连接一线程**（镜像 device WebConsole 的 acceptLoop）。
+           为什么必须改：旧实现 accept 后在同一个线程里 handle(s)，任何一个慢请求
+           都会把整个控制台堵死 —— 页面每 8s load() 会拉一次 /api/prog（反代 device
+           prog_list，v1.3.339 起还要同步拉服务端 /v1/history，链路超时 2.5~5s），
+           这条链一慢，期间点的暂停/播放全排在 accept 线程队尾 ⇒ 「点暂停/播放
+           要过一会儿才起效」，而且时好时坏（跟着服务端/网络快慢走），修了多少次
+           都「过段时间又复发」。多线程后慢请求只堵它自己，控制键永远即时。
+           并发安全性：SSE_SOCKS 本就是 ConcurrentHashMap 支撑的集合；慢接口
+           （ab/abl/fav 导入）早已是「异步 + 轮询」模型；PCtl 的播放控制是短
+           binder 调用且关键记账均有 synchronized —— device 侧同构跑了一年无恙。 */
         while (true) {
             Socket s = null;
             try {
                 s = ss.accept();
-                handle(s);
-            } catch (Throwable t) {
-                // ignore
-            } finally {
-                try {
-                    // ★ pl-1.6.91：交給 SSE 线程常驻的连接（在 SSE_SOCKS 里）不能关，
-                    //   它由 serveSse 的线程在用完时自己关。
-                    if (s != null && !SSE_SOCKS.contains(s)) {
-                        s.close();
+                final Socket sock = s;
+                Thread w = new Thread(new Runnable() {
+                    public void run() {
+                        try {
+                            handle(sock);
+                        } catch (Throwable t) {
+                            // ignore
+                        } finally {
+                            try {
+                                // ★ pl-1.6.91：交給 SSE 线程常驻的连接（在 SSE_SOCKS 里）不能关，
+                                //   它由 serveSse 的线程在用完时自己关。
+                                if (!SSE_SOCKS.contains(sock)) {
+                                    sock.close();
+                                }
+                            } catch (Throwable t) {
+                                // ignore
+                            }
+                        }
                     }
-                } catch (Throwable t) {
-                    // ignore
+                }, "r1web-conn");
+                w.setDaemon(true);
+                w.start();
+            } catch (Throwable t) {
+                // accept 失败：稍歇再收，避免错误风暴
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException ie) {
+                    return;
                 }
             }
         }
@@ -585,6 +611,40 @@ public final class WebSrv {
             }
             return;
         }
+        /* ★ pl-1.6.159：播放来源标签直连服务端 v1.7.31 的权威判定。
+           浏览器直接跨Origin问 8100 会被 CORS 拦，这里走 player 自己反代；
+           只做一次短超时 GET，页面侧按「曲目|标题」缓存，不会增加轮询压力。 */
+        if (path.equals("/api/src")) {
+            String su = q.get("url");
+            if (su == null) {
+                su = "";
+            }
+            String sq = q.get("q");
+            if (sq == null) {
+                sq = "";
+            }
+            String st = q.get("title");
+            if (st == null) {
+                st = "";
+            }
+            try {
+                String b = nasBase();
+                if (b == null) {
+                    json(os, jsonOk(false, "取不到音乐服务器地址"));
+                    return;
+                }
+                String js = httpGet(b + "/api/src?url=" + enc(su) + "&q=" + enc(sq)
+                        + "&title=" + enc(st), 4000);
+                if (js == null) {
+                    json(os, jsonOk(false, "来源查询没应答"));
+                    return;
+                }
+                json(os, js);
+            } catch (Throwable t) {
+                json(os, jsonOk(false, "来源查询失败：" + t));
+            }
+            return;
+        }
         /* ============ v1.3.286：电子书（有声书） ============ */
         if (path.equals("/api/absearch")) {
             JSONObject rq;
@@ -619,6 +679,96 @@ public final class WebSrv {
             } catch (Throwable t) { txt(os, 500, "result: " + t); }
             return;
         }
+        /* ★ pl-1.6.151：点缺集时先带 ep=N 问服务端（v1.7.5 自动救援）。
+           一次**按需**精确词救援拿真名 + rid，再交给 /api/abplay 直接播：
+           播放栏一上来就是真名，且救援成功时服务端已预热取链 ⇒ 点击秒开。
+           救不回 ⇒ missing:true，页面提示「这集暂时没有源」，不硬播非音频。 */
+        if (path.equals("/api/abep")) {
+            JSONObject rq;
+            try { rq = new JSONObject(body == null ? "{}" : body); }
+            catch (Throwable t) { rq = new JSONObject(); }
+            String aid = rq.optString("albumId", "").trim();
+            String bk = rq.optString("book", "").trim();
+            int ep = rq.optInt("ep", 0);
+            if (aid.length() == 0 || ep <= 0) { json(os, jsonOk(false, "缺少 albumId/ep")); return; }
+            try {
+                String b = nasBase();
+                if (b == null) { json(os, jsonOk(false, "取不到音乐服务器地址")); return; }
+                String js = httpGet(b + "/api/ab/episodes?albumId=" + enc(aid)
+                        + (bk.length() > 0 ? "&q=" + enc(bk) : "")
+                        + "&ep=" + ep + "&size=20", 40000);
+                if (js == null) { json(os, jsonOk(false, "集表没应答")); return; }
+                JSONObject o = new JSONObject(js);
+                JSONArray eps = o.optJSONArray("episodes");
+                JSONObject hit = null;
+                for (int i = 0; eps != null && i < eps.length(); i++) {
+                    JSONObject e = eps.optJSONObject(i);
+                    if (e != null && e.optInt("ep", 0) == ep) { hit = e; break; }
+                }
+                JSONObject out = new JSONObject();
+                out.put("ok", true);
+                out.put("rev", o.optInt("rev", 0));
+                out.put("ep", ep);
+                out.put("missing", hit == null || hit.optBoolean("missing", false)
+                        || hit.optString("rid", "").trim().length() == 0);
+                if (hit != null) {
+                    out.put("rid", hit.optString("rid", ""));
+                    out.put("title", hit.optString("title", ""));
+                    out.put("source", hit.optString("source", ""));
+                    out.put("artist", hit.optString("artist", ""));
+                }
+                json(os, out.toString());
+            } catch (Throwable t) { json(os, jsonOk(false, "救援失败：" + t)); }
+            return;
+        }
+        /* ★ pl-1.6.151：集表轻量复查 —— 只问 /api/ab/cache?key=..&full=1
+           （服务端**纯缓存直读、绝不回源**），拿 rev + 精简集表。
+           别的设备救援 / 补真名会让 rev++，页面据此把当前列表原地刷成真名。
+           15s 一次、零上游请求，不碰风控红线。 */
+        if (path.equals("/api/abrev")) {
+            JSONObject rq;
+            try { rq = new JSONObject(body == null ? "{}" : body); }
+            catch (Throwable t) { rq = new JSONObject(); }
+            String aid = rq.optString("albumId", "").trim();
+            String src = rq.optString("source", "kw").trim();
+            if (src.length() == 0) { src = "kw"; }
+            if (aid.length() == 0) { json(os, jsonOk(false, "缺少 albumId")); return; }
+            try {
+                String b = nasBase();
+                if (b == null) { json(os, jsonOk(false, "取不到音乐服务器地址")); return; }
+                String js = httpGet(b + "/api/ab/cache?key=" + enc(src + "|" + aid)
+                        + "&full=1", 15000);
+                if (js == null) { json(os, jsonOk(false, "rev 没应答")); return; }
+                JSONObject o = new JSONObject(js);
+                JSONObject out = new JSONObject();
+                out.put("ok", true);
+                out.put("rev", o.optInt("rev", 0));
+                out.put("total", o.optInt("total", 0));
+                out.put("missing", o.optInt("missing", 0));
+                JSONArray list = o.optJSONArray("list");
+                JSONArray outEps = new JSONArray();
+                for (int i = 0; list != null && i < list.length(); i++) {
+                    JSONObject e = list.optJSONObject(i);
+                    if (e == null) { continue; }
+                    JSONObject x = new JSONObject();
+                    x.put("ep", e.optInt("ep", 0));
+                    x.put("title", e.optString("title", ""));
+                    x.put("rid", e.optString("rid", ""));
+                    x.put("source", e.optString("source", o.optString("source", src)));
+                    x.put("artist", o.optString("narrator", ""));
+                    /* ★ pl-1.6.152：与服务端 v1.7.10 同口径 —— 没有 rid 就是缺集。
+                       旧版缓存行只有 rid:'' 没打 missing，页面 ebRevApply 会当成
+                       「既无 rid 又无 missing」而拒绝覆盖本地假 rid 脏行。 */
+                    x.put("missing", e.optBoolean("missing", false)
+                            || e.optString("rid", "").trim().length() == 0);
+                    x.put("rescued", e.optBoolean("rescued", false));
+                    outEps.put(x);
+                }
+                out.put("episodes", outEps);
+                json(os, out.toString());
+            } catch (Throwable t) { json(os, jsonOk(false, "rev 异常：" + t)); }
+            return;
+        }
         if (path.equals("/api/abepisodes")) {
             JSONObject rq;
             try { rq = new JSONObject(body == null ? "{}" : body); }
@@ -647,6 +797,8 @@ public final class WebSrv {
                     h.put("page", o.optInt("page", pg));
                     h.put("size", o.optInt("size", 20));
                     h.put("hasMore", o.optBoolean("hasMore", false));
+                    h.put("rev", o.optInt("rev", 0));                  // ★ pl-1.6.151 集表修订号
+                    h.put("source", o.optString("source", "kw"));      // ★ 拼 /api/ab/cache 的 key 用
                     JSONArray eps = o.optJSONArray("episodes");
                     h.put("episodes", eps == null ? new JSONArray() : eps);
                     h.put("msg", "");
@@ -872,8 +1024,10 @@ public final class WebSrv {
                 if (u.length() == 0) continue;
                 int ep = o.optInt("ep", i + 1);
                 String et = o.optString("title", "").trim();
+                /* ★ pl-1.6.162：book 一起带上（落到 PlaySong.album）—— 队列项自带书名，
+                   device 侧听书进度上报就不用再猜（以前本地节目被记成上一本在线书）。 */
                 PlaySong sg = PCtl.newSong("abl_" + aid + "_" + ep,
-                        ablEpLabel(ep, et), u, artist);
+                        ablEpLabel(ep, et), u, artist, book);
                 if (sg != null) items.add(sg);
             }
             if (items.isEmpty()) {
@@ -1240,6 +1394,16 @@ public final class WebSrv {
                 return jsonOk(true, "氛围灯灯效：" + (Amb.isOn() ? "多彩" : "原厂")
                         + "（on|multi / off|factory / ms:N / probe）"
                         + "，重排间隔 " + Amb.minMs() + "ms");
+            }
+            /* pl-1.6.150：蓝牙氛围灯兜底链的诊断 / 手动重判。
+               真正的触发在 Bt 里自驱（连上补 show 255 / 断开补 close 255），
+               这里不提供任何「自定义灯效」设置，灯效仍由原厂灯效服务跑。 */
+            if ("btlight".equals(op)) {
+                if ("refresh".equals(q.get("v"))) {
+                    Bt.syncBtLight();
+                    return jsonOk(true, "已重判蓝牙连接：" + Bt.btLightState());
+                }
+                return jsonOk(true, Bt.btLightState());
             }
             /* ★ pl-1.6.49：拾音灯「单颗直写」—— 给 device 的聆听灯用。
                灯长在 player 里（LedLight native），而 device 是 u0_a8、SELinux 挡着
@@ -1652,6 +1816,8 @@ public final class WebSrv {
             /* pl-1.6.30：七彩诊断串（钩子跑没跑 / 原厂喂不喂 / 自驱顶没顶）——
                以前「点了没反应」只能靠肉眼看灯猜，现在一句话说清 */
             o.put("amb7d", Amb.probe());
+            /* pl-1.6.150：蓝牙氛围灯兜底链运行状态（排障用） */
+            o.put("btLight", Bt.btLightState());
             /* pl-1.6.42：收藏条数（-1 = 读不到）—— 页面收藏卡的标题上显示 */
             o.put("favTotal", Fav.total());
 
@@ -1669,6 +1835,11 @@ public final class WebSrv {
                码率探测也改用真地址（占位地址探测出来的是我们自己的 302/404）。 */
             String favK = PCtl.favPendingKey(s == null ? "" : nz(s.getUrl()));
             String[] favReal = (favK != null) ? PCtl.favReal(favK) : null;
+            /* ★ pl-1.6.151：节目占位行（/r/prog?aid=&ep=）解析成功后，播放栏显示服务端真名，
+               而不是入列时的「第 N 集」缺集占位名。 */
+            String[] progPair = PCtl.progPendingKey(s == null ? "" : nz(s.getUrl()));
+            String[] progReal = (progPair != null)
+                    ? PCtl.progReal(progPair[0] + "|" + progPair[1]) : null;
             boolean viaPend = false;      // pl-1.6.45：曲目刚换 ⇒ 来源结论先不给
             if (s != null) {
                 m.put("curTitle", nz(s.getTitle()));
@@ -1700,7 +1871,8 @@ public final class WebSrv {
                格式与码率互不阻塞：电台拿不到时长也照样显示「MP3 · 64k」。 */
             {
                 AudioInfo ai = AudioInfo.of(
-                        (favReal != null && favReal[2].length() > 0) ? favReal[2]
+                        (progReal != null && progReal[2].length() > 0) ? progReal[2]
+                                : (favReal != null && favReal[2].length() > 0) ? favReal[2]
                                 : (s == null ? null : s.getUrl()), durMs);
                 m.put("br", ai.br);
                 m.put("fmt", ai.fmt);
@@ -1859,6 +2031,15 @@ public final class WebSrv {
                     m.put("curUrl", favReal[2]);
                 }
             }
+            if (progReal != null && progReal[0].length() > 0) {
+                m.put("curTitle", progReal[0]);
+                if (progReal[1].length() > 0) {
+                    m.put("curArtist", progReal[1]);
+                }
+                if (progReal[2].length() > 0) {
+                    m.put("curUrl", progReal[2]);
+                }
+            }
             o.put("music", m);
             o.put("queue", qb);
 
@@ -2009,6 +2190,28 @@ public final class WebSrv {
             return;
         }
         PCtl.noteProgResolved(aid, ep);        // 解析成功 ⇒ 撤掉之前的红标
+        /* ★ pl-1.6.151：device 回的真地址带 title=<服务端真名>&artist=...
+           （device v1.3.332 起 prog_resolve 带 ep 触发缺集按需救援，救回的就是真名 + rid）。
+           302 不会改写原 PlaySong 的 title（入列时是「第 N 集」占位名）⇒ 记一份真名，
+           /api/status 据此把播放栏换成真名。 */
+        if (u != null) {
+            String rt = "", ra = "";
+            int qi = u.indexOf('?');
+            if (qi > 0) {
+                for (String kv : u.substring(qi + 1).split("&")) {
+                    int eq = kv.indexOf('=');
+                    if (eq <= 0) { continue; }
+                    try {
+                        if ("title".equals(kv.substring(0, eq))) {
+                            rt = URLDecoder.decode(kv.substring(eq + 1), "UTF-8");
+                        } else if ("artist".equals(kv.substring(0, eq))) {
+                            ra = URLDecoder.decode(kv.substring(eq + 1), "UTF-8");
+                        }
+                    } catch (Throwable ignore) { }
+                }
+            }
+            if (rt.length() > 0) { PCtl.noteProgReal(aid, ep, rt, ra, u); }
+        }
         StringBuilder h = new StringBuilder();
         h.append("HTTP/1.0 302 Found\r\n");
         h.append("Location: ").append(u).append("\r\n");
