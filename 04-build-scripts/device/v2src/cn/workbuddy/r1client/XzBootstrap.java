@@ -38,7 +38,7 @@ public final class XzBootstrap {
      *     release 一定是某个测试版「验收通过」后的快照，改动内容写在发布目录 readme。
      * ⇒ 看到 1.3.x = 试验中；看到 2.0.x = 正式发布。别把两者混着递增。
      */
-    public static final String VERSION = "1.3.359";    // ★ 续播降级：本地库版本集数不够（3 集残卷）→ 退在线，别回「找不到记录」
+    public static final String VERSION = "1.3.360";    // ★ ab_play 没给集号 ⇒ 接着上次听（不再落「第0集 预告」）；本地集表一律走 abPick 跳过 ep<=0
 
     private static final AtomicBoolean booted = new AtomicBoolean(false);
     private static final AtomicBoolean ttsAttemptDone = new AtomicBoolean(true);

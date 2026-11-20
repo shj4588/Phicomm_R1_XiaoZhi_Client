@@ -9083,6 +9083,99 @@ public final class PlayerBridge {
         return eps.optJSONObject(0);
     }
 
+    /** ★ 1.3.360：花絮/预告类条目标题判据（只在 ep<=0 时用）。
+     *
+     * <p>本地书常把「第0集 预告」「片花」放在集表第一行 —— 它不是正片：</p>
+     * <ul>
+     *   <li>播出来用户会以为「续播记忆丢了」（实测 11-20 20:11 播《凡人修仙传》）；</li>
+     *   <li>ep=0 的上报被 {@code ProgProgress} 整条丢弃（{@code ep <= 0 ⇒ return false}）
+     *       ⇒ 服务端一条播放记录都没有，越听越像"没记忆"。</li>
+     * </ul>
+     * <p>「引子/序」这类正片开头的 ep 通常是 1，标题也不命中这些词，不受影响。</p> */
+    private static boolean abIsTrailer(String title) {
+        if (title == null) {
+            return false;
+        }
+        String t = title.trim();
+        if (t.length() == 0) {
+            return false;
+        }
+        String[] kw = {"预告", "片花", "花絮", "宣传", "片头曲", "片尾曲", "主题曲", "彩蛋"};
+        for (int i = 0; i < kw.length; i++) {
+            if (t.indexOf(kw[i]) >= 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** ★ 1.3.360：ab_play 没带集号时，「上次听到哪」。
+     *
+     * <p>来源顺序（与 ab_resume 同口径，取第一个有集号的）：</p>
+     * <ol>
+     *   <li>服务端书级共享进度 {@code /v1/resume} —— 语音/网页/stem 全通道的权威本，
+     *       已含「上一集听完 ⇒ 下一集开头」的判定；</li>
+     *   <li>我的节目 —— 收藏书 Prog 的 lastEp/lastPos；</li>
+     *   <li>SP「最近听书记忆」—— 纯语音播过、没收藏的书（lastListenEp/lastListenPos）。</li>
+     * </ol>
+     *
+     * <p>返回 {@code {ep, posSec}}；没有任何进度时返回 {@code {0,0}}，调用方落第一集。
+     * 位置统一回退 10 秒（与 stem / r1web 点播同口径）。</p> */
+    private static int[] lastHeardOf(String book) {
+        int ep = 0;
+        int pos = 0;
+        String src = "none";
+        try {
+            JSONObject sr = srvResume(book);
+            if (sr != null) {
+                ep = sr.optInt("ep", 0);
+                pos = Math.max(0, sr.optInt("pos", 0));
+                src = "srv";
+            }
+            Log.i(TAG, "lastHeardOf srv=" + (sr == null
+                    ? "null" : (sr.optInt("ep", 0) + "/" + sr.optInt("pos", 0)))
+                    + " book=" + book);
+        } catch (Throwable t) {
+            Log.w(TAG, "lastHeardOf srv: " + t);
+        }
+        if (ep <= 0) {
+            try {
+                JSONObject pb = Prog.findByName(book);
+                if (pb != null) {
+                    ep = pb.optInt("lastEp", 0);
+                    pos = pb.optInt("lastPos", 0);
+                    if (ep > 0) {
+                        src = "prog";
+                    }
+                }
+            } catch (Throwable t) {
+                ep = 0;
+                pos = 0;
+            }
+        }
+        if (ep <= 0) {
+            ep = lastListenEp(book);
+            if (ep > 0) {
+                pos = lastListenPos(book, ep);
+                src = "sp";
+            }
+        }
+        if (ep <= 0) {
+            Log.i(TAG, "lastHeardOf 无进度（这本书没听过）");
+            return new int[]{0, 0};
+        }
+        if (pos > 5) {
+            pos = pos - 10;
+        } else {
+            pos = 0;
+        }
+        if (pos < 0) {
+            pos = 0;
+        }
+        Log.i(TAG, "lastHeardOf ep=" + ep + " pos=" + pos + " src=" + src);
+        return new int[]{ep, pos};
+    }
+
     /** 起播一集 + 记进度（playUrl 成功后才写 SP）。what = 话术前缀（「下一集 ——」等）。 */
     /**
      * v1.3.263：整部入列 —— 与 queue_online 同构（本地段原样保留、在线段整批接在后面），
@@ -9125,6 +9218,15 @@ public final class PlayerBridge {
                     continue;
                 }
                 int ep = e.optInt("ep", 0);
+                /* ★ 1.3.360：ep<=0 的「预告/片花/花絮」不进队列。
+                   本地书常把它放在集表第一行，以前 startEp<=1 时不过滤 ⇒ 稳坐队首，
+                   成为"起播那一集"（实测 11-20 20:11 播《凡人修仙传》出声的是
+                   「第0集 预告」）；而且 ep=0 的上报会被 ProgProgress 整条丢弃
+                   ⇒ 服务端一条记录都没有。真正的正片（ep>=1）不受影响，
+                   「引子/序」这类正片开头的 ep 通常是 1，也不受影响。 */
+                if (ep <= 0 && abIsTrailer(e.optString("title", ""))) {
+                    continue;
+                }
                 /* ★ v1.3.325：本地书的集号从 0 起（引子/序）。原来只比「ep>0 且 < startEp」，
                    引子(0) 永远逃过过滤、稳坐队首 —— 说「播第3集」也从引子开始播。
                    现在 startEp>1 严格切；startEp<=1（没指定/就要第1集）时保留引子，
@@ -9614,6 +9716,22 @@ public final class PlayerBridge {
         if (q.length() == 0) {
             return "ERR 缺少 book（书名）";
         }
+        /* ★ 1.3.360：没说集数 ⇒ 接着上次听，别从第一行/第一集重头。
+           实测（11-20 20:11）：用户只说「凡人修仙传」（没带「继续」），模型按工具描述
+           调 ab_play 不传 ep ⇒ 本地命中「第0集 预告」⇒ 播了预告，用户以为"续播记忆丢了"；
+           更糟的是 ep=0 被上报侧整条丢弃（ProgProgress: ep<=0 ⇒ return false），
+           服务端连一条记录都没有。口径：**没有集号就接上次听到的那一集**，
+           从没听过的书才落到第一集（abPick 会跳过 ep<=0 的花絮/预告）。
+           想从头听请说「从第1集播」（模型会带 ep=1，不受这里影响）。 */
+        int resumePos = 0;
+        if (target <= 0) {
+            int[] lh = lastHeardOf(q);
+            if (lh[0] > 0) {
+                target = lh[0];
+                resumePos = lh[1];
+                Log.i(TAG, "abPlay 没给集号 → 接上次进度 ep=" + target + " pos=" + resumePos);
+            }
+        }
         String nar = args == null ? "" : args.optString("narrator", "").trim();
         /* ★ v1.3.275c：同名多版本盲挑根修。《凡人修仙传》有 7 个版本（光合积木/关彦之/
            微媒有道…），模型 ab_play 常不带 albumId ⇒ NAS 在同名版本里盲挑，挑错版本就
@@ -9668,11 +9786,17 @@ public final class PlayerBridge {
                     JSONArray larr = ldoc == null ? null : ldoc.optJSONArray("episodes");
                     JSONObject lep0 = null;
                     if (larr != null && larr.length() > 0) {
-                        /* 没说集数 ⇒ 从第一行起（本地书第一行常是「引子」，跳过它反而怪），
-                           说了集数 ⇒ 精确取那一集；取不到就交给在线链路兜底。 */
-                        lep0 = target > 0 ? abPick(larr, target) : larr.optJSONObject(0);
-                        if (lep0 == null) {
-                            lep0 = abPick(larr, target);
+                        /* ★ 1.3.360：无集号也走 abPick —— 它本来就跳过 ep<=0
+                           （「第0集 预告」这类花絮不是正片）。老代码无集号时直接
+                           larr[0]，绕过了这层保护：本地《凡人修仙传》第一行正是
+                           「第0集 预告」，用户只说「凡人修仙传」就播了预告。
+                           全表都没有正集号时才退回第一行（真有书只写集名不写集号）。 */
+                        lep0 = abPick(larr, target);
+                        if (lep0 == null && target <= 0) {
+                            /* 只为「整张表都没有正集号」（有的书集名只写「引子」「玉佩」）兜底。
+                               target>0 时本地取不到该集必须保持 null —— 下面会让位给在线链路，
+                               本地残卷（3 集）续播第 14 集正是靠这条走在线。 */
+                            lep0 = larr.optJSONObject(0);
                         }
                     }
                     if (lep0 != null) {
@@ -9695,12 +9819,18 @@ public final class PlayerBridge {
                         int ltot = ldoc.optInt("total", 0);
                         abLoaderSave(lbk, "abl:" + lid, "abl", 1,
                                 ldoc.optInt("size", 200), ltot, 0, 0);
+                        String lhint = resumePos > 0
+                                ? ("（本地书库，接着上次第 " + lep0.optInt("ep", 0) + " 集）")
+                                : "（本地书库）";
                         String lr = abQueueBook(lbk, ltot,
-                                ldoc.optJSONArray("episodes"), lep0.optInt("ep", 0),
-                                "（本地书库）");
+                                ldoc.optJSONArray("episodes"), lep0.optInt("ep", 0), lhint);
                         if (lr != null) {
+                            if (resumePos > 0) {
+                                askPlayerResumeSeek(resumePos, lep0.optInt("ep", 0));
+                            }
                             Log.i(TAG, "abPlay local hit id=" + lid + " book=" + lbk
-                                    + " ep=" + lep0.optInt("ep", 0));
+                                    + " ep=" + lep0.optInt("ep", 0)
+                                    + (resumePos > 0 ? (" pos=" + resumePos) : ""));
                             return lr;
                         }
                     }
@@ -9777,10 +9907,22 @@ public final class PlayerBridge {
         abLoaderSave(book, album, d.optString("source", "kw"),
                 d.optInt("page", 1), size, d.optInt("total", 0), rng[0], rng[1]);
         // 从 target 集起把本批入列，首集正式取链
-        String r = abQueueBook(book, d.optInt("total", 0), eps, e0.optInt("ep", 0),
-                ep > 0 ? "" : "（没说集数，从第1集开始）");
+        String ohint = "";
+        if (ep <= 0) {
+            ohint = resumePos > 0
+                    ? ("（接着上次第 " + e0.optInt("ep", 0) + " 集）")
+                    : "（没说集数，从第1集开始）";
+        }
+        String r = abQueueBook(book, d.optInt("total", 0), eps, e0.optInt("ep", 0), ohint);
         if (r == null) {
-            return abStart(book, e0);
+            String rs = abStart(book, e0);
+            if (resumePos > 0 && rs != null && rs.startsWith("OK")) {
+                askPlayerResumeSeek(resumePos, e0.optInt("ep", 0));
+            }
+            return rs;
+        }
+        if (resumePos > 0 && r.startsWith("OK")) {
+            askPlayerResumeSeek(resumePos, e0.optInt("ep", 0));
         }
         return r + batchHint(d);
     }
@@ -10494,6 +10636,7 @@ public final class PlayerBridge {
         try {
             String b = nasBase();
             if (b == null || b.length() == 0 || book == null || book.trim().length() == 0) {
+                Log.i(TAG, "srvResume 无 base/book（nas=" + b + " book=" + book + "）");
                 return null;
             }
             // ★ 1.3.347：带上设备标识（MAC12）—— 服务端 v1.7.38 设备分组按 ?dev= 严格隔离
@@ -10503,6 +10646,10 @@ public final class PlayerBridge {
                     + java.net.URLEncoder.encode(book.trim(), "UTF-8")
                     + (m.length() > 0 ? ("&dev=" + m) : ""), 2500);
             if (s == null || s.indexOf("\"found\":true") < 0) {
+                /* ★ 1.3.360：留一行诊断 —— 续播/无集号起播没接上服务端进度时，
+                   「服务端到底回了什么」必须一眼可见（以前只有异常才打日志）。 */
+                Log.i(TAG, "srvResume " + book + " miss -> "
+                        + (s == null ? "null" : (s.length() > 160 ? s.substring(0, 160) : s)));
                 return null;
             }
             JSONObject j = new JSONObject(s);

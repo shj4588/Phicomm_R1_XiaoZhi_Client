@@ -38,7 +38,7 @@ public final class XzBootstrap {
      *     release 一定是某个测试版「验收通过」后的快照，改动内容写在发布目录 readme。
      * ⇒ 看到 1.3.x = 试验中；看到 2.0.x = 正式发布。别把两者混着递增。
      */
-    public static final String VERSION = "1.3.190";
+    public static final String VERSION = "1.3.360";    // ★ ab_play 没给集号 ⇒ 接着上次听（不再落「第0集 预告」）；本地集表一律走 abPick 跳过 ep<=0
 
     private static final AtomicBoolean booted = new AtomicBoolean(false);
     private static final AtomicBoolean ttsAttemptDone = new AtomicBoolean(true);
@@ -302,6 +302,12 @@ public final class XzBootstrap {
         // ---- 2) 原厂唤醒：msgcenter 总线监听（type=33554432，与音频通路无关）----
         wakeup = new WakeupBridge(app, new WakeupBridge.OnWakeup() {
             public void onWakeup(final String word) {
+                // v1.3.199：省电模式 —— 唤醒事件一律不进会话（原厂 KWS 此时已被停掉，
+                // 这里只防「按键唤醒 / 迟到的广播」把小智本体重新拽起来）。
+                if (VoicePower.isOff()) {
+                    Log.i(TAG, "wakeup ignored (省电模式): " + word);
+                    return;
+                }
                 SessionController s = session;
                 if (s != null) s.onWakeup(word);
             }
@@ -345,8 +351,13 @@ public final class XzBootstrap {
 
         ota = new OtaClient(app, new OtaClient.Callback() {
             public void onToken(String token) {
+                // v1.3.258：手动填了服务器 Token 就别让 OTA 覆盖
+                if (serverToken().length() > 0) {
+                    Log.i(TAG, "server token present (files/server_token) -> skip OTA token");
+                    return;
+                }
                 Log.i(TAG, "got token from OTA: " + (token == null ? "null" : token));
-                ws.setToken(token);
+                if (ws != null) ws.setToken(token);
             }
             public void onWsUrl(String u) {
                 // v1.3.101：files/ws_url 直连覆盖优先级最高（本地服务器免 OTA 时用）
@@ -395,6 +406,8 @@ public final class XzBootstrap {
             // readData() 分流取 PCM。这样唤醒那一刻 USC 重启录音线程的
             // openAudioIn() 一定能成功（设备不被我们占着）→ 原厂 KWS 永不失聪。
             AudioCapture.useUscTap = !new File(app.getFilesDir(), "no_usc_tap").exists();
+            // v1.3.323：搭车模式自动挂常驻播放流，防止 HAL 播放 idle 后把输入下电。
+            AudioCapture.noSessBind = new File(app.getFilesDir(), "no_sess_bind").exists();
             // v1.3.109：上行自动电平控制（默认关）。打开后固定的 files/gainN 不再参与，
             // 由 ALC 逐帧把 tap 出来的电平压到同一个目标 RMS —— 专治「原厂那条链
             // 每轮输出的增益都不一样」导致的时远时近。
@@ -443,6 +456,16 @@ public final class XzBootstrap {
             Log.w(TAG, "audio cfg flag read failed", t);
         }
 
+        // ---- 5.5) v1.3.199：语音软开关（省电模式）----
+        // files/voice_off 存在 ⇒ 停用「KWS 唤醒 + 收音 + 小智本体」，但 web 控制台
+        // （电台 / 搜索 / 点播跑在同一个进程里）照常可用。状态由 VoicePower 保管，
+        // 真正的「停/起原厂 USC」要等 SpeechManager 把引擎实例送过来才执行。
+        try {
+            VoicePower.boot(app, new File(app.getFilesDir(), VoicePower.FLAG).exists());
+        } catch (Throwable t) {
+            Log.w(TAG, "voice power boot: " + t);
+        }
+
         mic = new AudioCapture();   // 先创建不启动
         session = new SessionController(app, mic, opus, player, null, ws);
         // v1.3.69 ★★★ 关键接线（此前遗漏，对照主线 R1ClientService 补）：
@@ -478,6 +501,35 @@ public final class XzBootstrap {
         // 反射挂 device 自带的 PhicommMusicController，走 ROM 消息总线控 player。
         // 失败只记日志，绝不影响小智主链路。
         PlayerBridge.init(app);
+        ProgKeeper.start();   // prog keeper: PlayerBridge source lost, standalone class
+
+        // ---- 7b) v1.3.200：收藏列表（files/r1_fav.json）—— 必须在 PlayerBridge 之后
+        //   （播收藏要回曲库反查），在 WebConsole 之前（它的 /api/fav 直接读）。
+        Fav.init(app);
+
+        // ★ v1.3.301：节目收藏（files/r1_prog.json）—— 必须 init，否则 app 为 null，
+        //   file() 抛 NPE、write() 被 Throwable 吞掉，节目收藏只活在内存 cache 里，
+        //   device 一更新/重启就全没了（之前 1.3.286~1.3.300 一直漏了这行 init）。
+        Prog.init(app);
+
+        // ★ v1.3.308：听书进度自记 —— 语音听书（网页没开）也要记住「听到第几秒」，
+        //   否则「继续播放某本」只能从 0:00 起。必须在 Prog.init 之后。
+        try {
+            ProgProgress.start();
+        } catch (Throwable t) {
+            Log.w(TAG, "prog progress: " + t);
+        }
+
+        // ---- 7c) v1.3.245：闹钟（files/r1_alarms.json）----
+        //   ★ 刻意放在 device 进程里：用户要求「停用语音助手不影响闹钟功能」。
+        //     VoicePower 停的是原厂 USC 引擎的唤醒/录音和 WS 长连，进程仍在
+        //     ⇒ 这个 5 秒一跳的调度线程照跑；响铃靠 PlayerBridge 播歌（player 独立进程）。
+        //   必须在 WebConsole 之前（/api/alarm 读的就是这里的表）。
+        try {
+            Alarm.init(app);
+        } catch (Throwable t) {
+            Log.w(TAG, "alarm init: " + t);
+        }
 
         // ---- 8) v1.3.99：web 控制台（激活码 / 状态 / 设置）----
         // 替代悬浮窗：局域网内任何浏览器可开 http://<音箱IP>:8088/
@@ -511,6 +563,13 @@ public final class XzBootstrap {
             o.put("session", s);
 
             o.put("music", PlayerBridge.statusJson());
+            // v1.3.253：响铃期间媒体流被设成「闹钟音量」—— 播放界面只该显示音乐音量，
+            //   所以把「用户自己的音乐音量」和「是否正被设着」一起报出去；
+            //   player 的 statusJson 会把 device 的 key 整个拷过去 → 原样透传。
+            o.put("ringVolOn", AlarmVol.isTouched());
+            o.put("musicVolUser", AlarmVol.userMusic());
+            // v1.3.199：语音软开关（省电模式）
+            o.put("voice", VoicePower.json());
         } catch (Throwable t) {
             Log.w(TAG, "fill status: " + t);
         }
@@ -577,6 +636,26 @@ public final class XzBootstrap {
         return (s == null || s.length() == 0) ? OtaClient.otaUrlOf(app) : s;
     }
 
+    /** v1.3.258：手动设置的服务器 Token（files/server_token）。留空 = 用 OTA 返回的 */
+    public static String serverToken() {
+        String s = readLineFile("server_token");
+        return (s == null) ? "" : s;
+    }
+
+    /** v1.3.259：真实生效的 WS 地址 —— files/ws_url 覆盖优先，否则 = WS 实例当前 url（OTA 下发或官方默认） */
+    public static String wsEffective() {
+        String o = wsOverride();
+        if (o != null) return o;
+        return (ws == null) ? "" : ws.getUrl();
+    }
+
+    /** v1.3.259：真实生效的 token —— 手动设置优先，否则 = WS 实例当前 token（OTA 返回，官方是 test-token） */
+    public static String tokenEffective() {
+        String t = serverToken();
+        if (t.length() > 0) return t;
+        return (ws == null) ? "" : ws.getToken();
+    }
+
     /**
      * web 控制台「切换服务器」：写完 files/ota_url、files/ws_url 之后调用。
      *   1) ws 直连覆盖立即生效；
@@ -601,6 +680,12 @@ public final class XzBootstrap {
                     + " ws_override=" + (wso == null ? "none" : wso));
             if (ota != null) {
                 ota.fetch();
+            }
+            // v1.3.258：手动服务器 Token 优先于 OTA 返回的，设好再重连
+            String stk = serverToken();
+            if (stk.length() > 0 && ws != null) {
+                ws.setToken(stk);
+                sb.append("(token 手动) ");
             }
             restartWs();
             return sb.toString();
