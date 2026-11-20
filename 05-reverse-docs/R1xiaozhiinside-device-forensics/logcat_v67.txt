@@ -879,7 +879,7 @@ D/UNI_4MIC(  209): [UNI_4MIC]:<DEBUG> 00,d0,00,00
 D/UNI_4MIC(  209): [UNI_4MIC]:<DEBUG> 00,30,00,00
 D/UNI_4MIC(  209): [UNI_4MIC]:<DEBUG> 00,b0,00,00
 D/UNI_4MIC(  209): [UNI_4MIC]:<DEBUG> 
-D/Neptune (  961): [SendSsdpSearchResponse] FINE: Responding to a M-SEARCH request for urn:schemas-upnp-org:device:MediaRenderer:1
+D/Neptune (  961): [SendSsdpSearchResponse] FINE: Responding to a M-SEARCH request for urn:schemas-upnp-org:device:MediaRenderer:1
 D/UNI_4MIC(  209): [UNI_4MIC]:<DEBUG> 00,00,14,00
 D/UNI_4MIC(  209): [UNI_4MIC]:<DEBUG> 00,80,12,00
 D/UNI_4MIC(  209): [UNI_4MIC]:<DEBUG> 00,40,00,00

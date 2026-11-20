@@ -1107,7 +1107,7 @@
 <4>[   16.162283] Final fw_path=/system/etc/firmware/fw_bcm43455c0_ag.bin
 <4>[   16.162293] Final nv_path=/system/etc/firmware/nvram_ap6255.txt
 <4>[   16.162302] Final conf_path=/system/etc/firmware/config.txt
-<4>[   16.373657] NVRAM version:  Cloned from bcm94345wlpagb_p2xx.txt 
+<4>[   16.373657] NVRAM version:  Cloned from bcm94345wlpagb_p2xx.txt 
 <4>[   16.374669] dhdsdio_write_vars: Download, Upload and compare of NVRAM succeeded.
 <4>[   16.378919] Current WiFi chip is AP6335.
 <4>[   16.461628] dhd_bus_init: enable 0x06, ready 0x06 (waited 0us)
@@ -1143,7 +1143,7 @@
 <4>[   16.726560] Current WiFi chip is AP6335.
 <6>[   16.748991] [BT_RFKILL]: bt shut off power
 <4>[   16.805008] P2P interface registered
-<4>[   16.813951] WLC_E_IF: NO_IF set, event Ignored
+<4>[   16.813951] WLC_E_IF: NO_IF set, event Ignored
 <4>[   16.815785] P2P interface started
 <4>[   16.969054] Current WiFi chip is AP6335.
 <4>[   16.975968] dhd_pktfilter_offload_set: failed to add pktfilter 102 0 0 0 0xFFFFFF 0x01005E, retcode = -2
